@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+: ${QUIET=0}
+
+PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin:/usr/local/sbin:${PATH}"
+
+if (( QUIET > 0 )); then
+    mkdir() { env mkdir -p "$@"; }
+    cp() { env cp -r "$@"; }
+else
+    mkdir() { env mkdir -vp "$@"; }
+    cp() { env cp -rv "$@"; }
+fi
+
+# find_lib [binary] [libfolder]
+# examples:
+#   lib32bit=($(find_lib /bin/ping lib))
+#   usrlib32bit=($(find_lib /bin/ping usr/lib))
+#   lib64bit=($(find_lib /bin/ping lib64))
+#   if (( ${#lib32bit[@]} > 0 )); then
+#       cp -v "${lib32bit[@]}" chroot/lib/
+#   fi
+#find_lib() {
+#    local binfile="$1" libfolder="lib"
+#    (( $# > 1 )) && libfolder="$2"
+#
+#    ldd "$binfile" | sed -En 's#.*(/'$libfolder'/[a-zA-Z0-9_./-]+\.so(.[0-9]+)?).*#\1#pg'
+#}
+
+# Echo the value of arg 1 if arg 1's value is an existent file path.
+_echof() { [[ -f "$1" ]] && echo "$1"; }
+
+LIB_SEARCH=(
+    /usr/lib 
+    /usr/lib64 
+    /usr/local/lib 
+    /usr/local/lib64 
+    /lib 
+    /lib64
+)
+# LIB_SEARCH_REL is the same as LIB_SEARCH but without a starting /
+LIB_SEARCH_REL=()
+for ldir in "${LIB_SEARCH[@]}"; do LIB_SEARCH_REL+=("${ldir:1}"); done
+
+locate_lib() {
+    local lpath="$1"
+
+    # Trim off the base folder ( /usr/lib(64) or /lib(64) )
+    if grep -Eq '^/usr/lib' <<< "$lpath"; then
+        lpath=$(echo "$lpath" | cut -d'/' -f4-)
+    elif grep -Eq '^/lib' <<< "$lpath"; then
+        lpath=$(echo "$lpath" | cut -d'/' -f3-)
+    fi
+    >&2 echo "lpath is: ${lpath}"
+    # Echo these absolute library paths if they exist as a file
+    for ldir in "${LIB_SEARCH[@]}"; do
+        _echof "${ldir}/${lpath}"
+        _echof "${ldir}/${lpath}.0"
+        _echof "${ldir}/${lpath}.0.0"
+        _echof "${ldir}/${lpath}.1"
+        _echof "${ldir}/${lpath}.1.0"
+    done
+
+    #_echof "/usr/lib/${lpath}"
+    #_echof "/usr/lib64/${lpath}"
+    #_echof "/usr/local/lib/${lpath}"
+    #_echof "/usr/local/lib64/${lpath}"
+    #_echof "/lib/${lpath}"
+    #_echof "/lib64/${lpath}"
+}
+
+_copy_lib() {
+   local l="$1" out_folder="$2" 
+   if [[ ! -f "$l" ]]; then
+        >&2 echo " [!!!] Warning: '${l}' does not exist."
+        # Search for this library in alternative lib folders
+        _locatedlibs=($(locate_lib "$l"))
+        if (( ${#locatedlibs[@]} > 0 )); then
+            # If we've found one or more libraries with the same sub-path/name, recursively call _copy_lib
+            # to copy each matching library to their appropriate destination.
+            for lb in "${locatedlibs[@]}"; do
+                >&2 echo " [!!!] Found same library filename at '${lb}' - will copy that instead."
+                _copy_lib "$lb" "$out_folder"
+            done
+            return 0
+        else
+            >&2 echo " [!!!] ERROR - Failed to locate library '${l}' in alternative library folders."
+            return 1
+        fi
+   fi
+
+   libfolder=$(dirname "$l")
+   libfolder="${libfolder:1}"
+   libout="${out_folder}/${libfolder}"
+   [[ ! -d "$libout" ]] && mkdir "${libout}"
+   cp "$l" "${libout}/"
+}
+
+copy_libs() {
+    local binfile="$1" out_folder="$PWD"
+    (( $# > 1 )) && out_folder="$2"
+    
+    [[ ! -d "${out_folder}/lib" ]] && mkdir "${out_folder}/lib"
+    [[ ! -d "${out_folder}/lib64" ]] && mkdir "${out_folder}/lib64"
+    [[ ! -d "${out_folder}/usr/lib" ]] && mkdir "${out_folder}/usr/lib"
+    [[ ! -d "${out_folder}/usr/lib64" ]] && mkdir "${out_folder}/usr/lib64"
+
+    _libs=($(find-libs "$binfile" "${LIB_SEARCH_REL[@]}"))
+
+    if (( ${#_libs[@]} > 0 )); then
+        for l in "${_libs[@]}"; do 
+            _copy_lib "$l" "$out_folder"
+        done
+    fi
+
+}
+
+if (( $# < 1 )) || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    >&2 echo "
+    Usage:
+        $0 [paths_to_binaries...] [output_folder=PWD]
+        
+        Detects the libraries required by the binaries specified as arguments, copies the libraries in their
+        original hierarchical format into 'output_folder' (if not specified, defaults to PWD).
+
+    Part of https://github.com/Privex/utils
+    (C) 2020 Privex Inc. - https://www.privex.io
+        "
+    exit 1
+fi
+
+if (( $# > 1 )); then
+    for out_folder; do true; done
+
+    if [[ ! -d "$out_folder" ]]; then
+        >&2 echo "Final argument '${out_folder}' isn't a folder... assuming ${out_folder} is an additional binary"
+        >&2 echo "and output folder is PWD: ${PWD}"
+        extra_bin="$out_folder"
+        out_folder="$PWD"
+        copy_libs "$extra_bin" "$out_folder"
+    fi
+    while (( $# > 1 )); do
+        binfile="$1"
+        copy_libs "$binfile" "$out_folder"
+        shift
+    done
+else
+    copy_libs "$1" "$PWD"
+fi
+

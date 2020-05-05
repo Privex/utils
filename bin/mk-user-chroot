@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+# Error handling function for ShellCore
+_sc_fail() { >&2 echo "Failed to load or install Privex ShellCore..." && exit 1; }
+
+# If `load.sh` isn't found in the user install / global install, then download and run the auto-installer
+# from Privex's CDN.
+[[ -f "${HOME}/.pv-shcore/load.sh" ]] || [[ -f "/usr/local/share/pv-shcore/load.sh" ]] || \
+    { curl -fsS https://cdn.privex.io/github/shell-core/install.sh | bash >/dev/null; } || _sc_fail
+
+# Attempt to load the local install of ShellCore first, then fallback to global install if it's not found.
+[[ -d "${HOME}/.pv-shcore" ]] && source "${HOME}/.pv-shcore/load.sh" || \
+    source "/usr/local/share/pv-shcore/load.sh" || _sc_fail
+
+
+if [ -z ${chroot_bins[@]+x} ]; then
+
+    chroot_bins=(
+        /bin/{bash,sh,ls,pwd,cat,echo,touch,ln,cp,mv,ping,true,grep,egrep,sleep}
+        /usr/bin/{env,dirname,basename,tput,getopt,tr,clear,reset}
+    )
+
+fi
+
+if [ ! -z ${extra_chroot_bins[@]+x} ]; then
+    msgerr yellow "Detected non-empty 'extra_chroot_bins'. Adding binaries to chroot_bins: ${extra_chroot_bins[*]}"
+
+    for b in "${extra_chroot_bins[@]}"; do
+        chroot_bins+=("$b")
+    done
+fi
+
+if [ -z ${EXTRA_USR_LIBS[@]+x} ]; then
+    EXTRA_USR_LIBS=()
+fi
+
+if (( $# < 1 )) || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    msg cyan "\n
+Usage: $0 [username]${RESET}
+
+    Creates a user 'username' and prepares their home directory for use with an SSH chroot
+
+    ${BOLD}${GREEN}What does this do?${RESET}
+
+    ${MAGENTA}
+     - Creates the Linux account 'username'
+     
+     - Creates the chroot folders in /home/(username):
+        - bin lib lib64 usr/{bin,local,share,lib,sbin,src,include} etc
+        - home/(username)        # Inside the chroot, /home/(user)/home/(user) appears to be /home/(user)
+     
+     - Creates '.hushlogin' files to silence MOTD
+     - Sets ownership of user's homefolder to root:root
+     - Copies locale files and terminfo files into the chroot
+     
+     - Installs various important binaries into the chroot, and any libraries that they depend on
+        - Default binaries (chroot_bins): ${chroot_bins[*]}
+        - Additional binaries can be specified as ENV var 'extra_chroot_bins=(/bin/something /usr/bin/other)'
+     
+     - Additional libraries can be manually specified through the array 'EXTRA_USR_LIBS=(/lib/something.so /usr/lib64/other.so)'
+
+     - Prepares the chroot user for SSH usage:
+        - Creates /home/(username)/.ssh
+        - Creates an empty /home/(username)/.ssh/authorized_keys
+        - Links '/home/(username)/.ssh' to '/home/(username)/home/(username)/.ssh'
+        - chown's .ssh to (username):(username)
+        - chmod's ssh recursively to 700
+
+     - Installs the shell 'USER_SHELL_SRC' into 'USER_SHELL_DST' if it wasn't previously copied as part of 'chroot_bins',
+       and ensures it's marked executable
+     
+     - Sets the user's shell to 'USER_SHELL'
+    ${RESET}
+
+    ${BOLD}${GREEN}Examples:${RESET}
+
+    ${YELLOW}
+        # Create the user 'johndoe' with a standard chroot setup.
+        $0 johndoe
+
+        # Install these additional binaries into generated chroots, including automatic
+        # detection of any required libraries, auto-copying the libs from the host into
+        # the chroot.
+        export extra_chroot_bins=(
+            /usr/bin/ipmitool
+            /usr/bin/curl
+            /usr/bin/wget
+            /bin/telnet
+        )
+
+        # Create the user 'dave' with a chroot, a custom home folder, and will also install the additional
+        # binaries listed above into the appropriate chroot bin folders.
+        USER_HOMEDIR='/mnt/dave' $0 dave
+
+        # Create the user 'jane' with a custom script / binary as their shell
+        # to lock down what 'jane' can do.
+        export USER_SHELL='/somescript.sh'
+        export USER_SHELL_SRC='/root/somescript.sh'
+        export USER_SHELL_DST='somescript.sh'
+        
+        $0 jane
+    ${RESET}
+
+    Part of https://github.com/Privex/utils
+    (C) 2020 Privex Inc. - https://www.privex.io
+
+    "
+
+    exit 1
+fi
+
+if (( EUID != 0 )); then
+    msg bold red " [!!!] Please run this script as root. E.G: ${RESET} sudo $0 someuser"
+    exit 1
+fi
+
+
+# The username of the user (pre-filled by 1st cmd arg)
+: ${USER_USERNAME="$1"}
+
+# Set the user's shell to this string (note: '/' is relative to the user's homedir, e.g. /home/johndoe)
+: ${USER_SHELL="/bin/bash"}
+
+# Copy the user's shell from this file (on the host system)
+: ${USER_SHELL_SRC="/bin/bash"}
+
+# Copy the user's shell into this file (relative to the user chroot)
+: ${USER_SHELL_DST="bin/bash"}
+
+# The home directory to create/use for the user
+: ${USER_HOMEDIR="/home/${USER_USERNAME}"}
+
+
+setup_dev() {
+    mkdir dev
+    cd dev
+    mknod -m 777 null c 1 3
+    mknod -m 666 tty c 5 0
+    mknod -m 666 zero c 1 5
+    mknod -m 666 random c 1 8
+    cd ..
+}
+
+_setup_locale() {
+    msg bold green " >>> Rsyncing locale files into chroot"
+    mkdir -p usr/share/i18n/locales usr/share/X11/locale usr/share/locale/ usr/share/terminfo usr/lib/locale/
+
+    [[ -d /usr/share/i18n/locales ]] && rsync -a /usr/share/i18n/locales/ usr/share/i18n/locales/
+    [[ -d /usr/share/X11/locale ]] && rsync -a /usr/share/X11/locale/ usr/share/X11/locale/
+    [[ -d /usr/share/locale ]] && rsync -a /usr/share/locale/ usr/share/locale/
+    [[ -d /usr/lib/locale ]] && rsync -a /usr/lib/locale/ usr/lib/locale/
+
+    msg bold green " >>> Rsyncing terminfo files into chroot"
+    [[ -d /usr/share/terminfo ]] && rsync -a /usr/share/terminfo/ usr/share/terminfo/
+}
+
+_setup_structure() {
+    local usr_home="$1" chr_home="$2"
+    msg bold green " >>> Setting ownership of $usr_home to root:root perms 755"
+    chown root:root "$usr_home"
+    chmod 755 -R "$usr_home"
+
+    cd "$usr_home"
+    msg bold green " >>> Creating basic rootfs folders"
+    mkdir -pv bin lib lib64 usr/{bin,local,share,lib,sbin,src,include} etc 
+
+    msg bold green " >>> Creating user home folder within home chroot: ${chr_home}"
+    mkdir -pv "$chr_home"
+
+    msg green "     -> Creating .hushlogin files"
+    touch "${usr_home}/.hushlogin"
+    touch "${chr_home}/.hushlogin"
+}
+
+_install_bins() {
+    local usr_home="$1"
+    msg bold green " >>> Copying binaries and their required libraries into ${usr_home}"
+    msg cyan "      Binaries: ${chroot_bins[*]}"
+    # lib-copy "${chroot_bins[@]}" "${usr_home}"
+
+    for b in "${chroot_bins[@]}"; do
+        copy-bin-chroot "$b" "${usr_home}"
+        # if [[ ! -f "$b" ]]; then
+        #     msgerr red " [!!!] Binary '$b' doesn't exist. Not copying."
+        # fi
+
+        # orig_bin_dir=$(dirname "$b")
+        # orig_bin_dir="${orig_bin_dir:1}"
+        # msg green "          -> Copying binary $b into ${usr_home}/${orig_bin_dir}"
+        # [[ ! -d  "${usr_home}/${orig_bin_dir}" ]] && mkdir -pv "${usr_home}/${orig_bin_dir}"
+        # cp -v "$b" "${usr_home}/${orig_bin_dir}/"
+    done
+}
+
+
+_fix-ssh() {
+    local user="$1" usr_home="$2" chr_home="$3"
+    msg green " >>> Preparing user for SSH usage..."
+
+    msg green "      -> Creating .ssh folder"
+    mkdir -pv "${usr_home}/.ssh"
+    
+    msg green "      -> Creating blank .ssh/authorized_keys file"
+    touch "${usr_home}/.ssh/authorized_keys"
+
+    msg green "      -> Linking ${usr_home}/.ssh into ${chr_home}/.ssh"
+    cd "${chr_home}"
+    rel_path=$(detect-relpath "${usr_home}" "${chr_home}")
+    ln -vs "${rel_path}/.ssh" "${chr_home}/.ssh"
+
+    msg green "      -> Setting permissions of ${usr_home}/.ssh to 700"
+    chmod -Rv 700 "${usr_home}/.ssh"
+
+    msg green "      -> Setting ownership of ${usr_home}/.ssh to ${user}:${user}"
+    chown -Rv "${user}:${user}" "${usr_home}/.ssh"
+}
+
+mk_user() {
+    local user="$1" clear_pass=1
+    local usr_home="${USER_HOMEDIR}"
+    local chr_home="${usr_home}/${usr_home:1}"
+
+    (( $# > 1 )) && clear_pass="$2"
+
+    msg bold green " >>> Creating user with disabled password: $user"
+    adduser --gecos "" --home "$USER_HOMEDIR" --disabled-password "$user"
+
+    if (( clear_pass == 1 )); then
+        msg green "     -> Setting blank password for $user"
+        passwd --delete "$user"
+    fi
+
+    cd "$usr_home"
+    _setup_structure "$usr_home" "$chr_home"
+
+    msg bold green " >>> Creating /dev folder in user home folder ${usr_home}"
+    setup_dev
+
+    _setup_locale
+    _install_bins "$usr_home"
+
+    msg bold green " >>> Copying EXTRA_USR_LIBS into ${usr_home}/usr/lib"
+    msg cyan "      Libs: ${EXTRA_USR_LIBS[*]}"
+    for b in "${EXTRA_USR_LIBS[@]}"; do
+        msg green "          -> Copying library $b"
+        cp -v "$b" "${usr_home}/usr/lib/"
+    done
+
+    _fix-ssh "$user" "$usr_home" "$chr_home"
+
+    if [[ -f "${usr_home}/${USER_SHELL_DST}" ]]; then
+        msg yellow " [...] User shell already installed at '${usr_home}/${USER_SHELL_DST}' - not copying."
+    else
+        msg yellow " >>> Copying shell from $USER_SHELL_SRC into '${usr_home}/${USER_SHELL_DST}'"
+        cp -v "$USER_SHELL_SRC" "${usr_home}/${USER_SHELL_DST}"
+    fi
+    
+
+    msg bold green " >>> Setting ${user} shell to ${USER_SHELL}"
+    chsh -s "$USER_SHELL" "${user}"
+
+    #msg bold green " >>> Fixing permissions for dev/null"
+    #chmod 777 "${usr_home}/dev/null"
+}
+
+mk_user "$1"
+
+
+

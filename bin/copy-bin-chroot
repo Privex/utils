@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+# Error handling function for ShellCore
+_sc_fail() { >&2 echo "Failed to load or install Privex ShellCore..." && exit 1; }
+
+# If `load.sh` isn't found in the user install / global install, then download and run the auto-installer
+# from Privex's CDN.
+[[ -f "${HOME}/.pv-shcore/load.sh" ]] || [[ -f "/usr/local/share/pv-shcore/load.sh" ]] || \
+    { curl -fsS https://cdn.privex.io/github/shell-core/install.sh | bash >/dev/null; } || _sc_fail
+
+# Attempt to load the local install of ShellCore first, then fallback to global install if it's not found.
+[[ -d "${HOME}/.pv-shcore" ]] && source "${HOME}/.pv-shcore/load.sh" || \
+    source "/usr/local/share/pv-shcore/load.sh" || _sc_fail
+
+: ${QUIET=0}
+
+PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin:/usr/local/sbin:${PATH}"
+
+
+if (( QUIET >= 1 )); then
+    mkdir() { env mkdir -p "$@"; }
+    cp() { env cp -r "$@"; }
+else
+    mkdir() { env mkdir -vp "$@"; }
+    cp() { env cp -rv "$@"; }
+fi
+
+
+OUT_FOLDER=""
+
+copy_bin() {
+    bin_file="$1" out_folder="$2"
+    (( QUIET == 2 )) || msg bold green "\n >>> Copying binary $bin_file and it's required libraries into $out_folder"
+    if [[ ! -f "$bin_file" ]]; then
+        msgerr red " [!!!] Binary '$bin_file' doesn't exist. Not copying."
+        return 1
+    fi
+
+    lib-copy "$bin_file" "$out_folder"
+
+    orig_bin_dir=$(dirname "$bin_file")
+    orig_bin_dir="${orig_bin_dir:1}"
+    (( QUIET == 2 )) || msg green "          -> Copying binary $bin_file into ${out_folder}/${orig_bin_dir}"
+    [[ ! -d "${out_folder}/${orig_bin_dir}" ]] && mkdir -pv "${out_folder}/${orig_bin_dir}"
+    cp "$bin_file" "${out_folder}/${orig_bin_dir}/"
+    (( QUIET == 2 )) || msg green " [+++] Installed binary $bin_file + libraries into ${out_folder}\n"
+}
+
+if (( $# < 1 )); then
+    >&2 echo "
+    Usage: $0 [binaries...] [output_path=PWD]
+
+    ${BOLD}${GREEN}Examples:${RESET}
+
+    ${YELLOW}
+    
+        ### You can specify a singular binary and destination folder, and that binary will be installed
+        ### at (output_path) under the same folder structure
+        ### e.g. /bin/bash would be installed at /mnt/my/chroot/bin/bash
+        ### e.g. /usr/bin/curl would be installed at /mnt/my/chroot/usr/bin/curl
+        user@host ~ $ $0 /bin/bash /mnt/my/chroot
+
+        ### If you specify only a binary, it will install the binary and required libraries under the
+        ### current working directory (PWD).
+        user@host /mnt/example $ $0 /bin/bash
+        user@host /mnt/example $ ls
+        bin lib lib64 usr
+        user@host /mnt/example $ ls bin
+        bash
+
+        ### You can specify multiple binary files at the same time. The final argument will be checked to see if it's a valid
+        ### directory. If the last argument is a directory, then it will be used as the output_path. Otherwise the binaries/libraries
+        ### will be installed in the current working directory.
+
+        # In this example, the last argument is a binary (slotmgr). So the binaries/libraries will be installed under /mnt/example (PWD).
+        user@host /mnt/example $ $0 /bin/bash /usr/bin/curl /usr/local/bin/slotmgr
+
+        # In this example, the last argument is a folder (/opt/root). So the binaries/libraries will be installed under /opt/root
+        user@host /mnt/example $ mkdir -p /opt/root
+        user@host /mnt/example $ $0 /bin/bash /usr/bin/curl /usr/local/bin/slotmgr /opt/root
+        user@host /mnt/example $ ls /opt/root
+        bin lib lib64 usr
+        user@host /mnt/example $ ls /opt/root/usr/bin
+        curl
+    ${RESET}
+
+    Part of https://github.com/Privex/utils
+    (C) 2020 Privex Inc. - https://www.privex.io
+    
+    "
+    exit 1
+fi
+
+
+if (( $# > 1 )); then
+    for OUT_FOLDER; do true; done
+
+    if [[ ! -d "$OUT_FOLDER" ]]; then
+        >&2 echo " [!!!] Final argument '${OUT_FOLDER}' isn't a folder... assuming ${OUT_FOLDER} is an additional binary"
+        >&2 echo " [!!!] and output folder is PWD: ${PWD}"
+        extra_bin="$OUT_FOLDER"
+        OUT_FOLDER="$PWD"
+        copy_bin "$extra_bin" "$OUT_FOLDER"
+    fi
+    while (( $# > 1 )); do
+        binfile="$1"
+        copy_bin "$binfile" "$OUT_FOLDER"
+        shift
+    done
+else
+    copy_bin "$1" "$PWD"
+fi
+

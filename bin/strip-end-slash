@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+strip-end-slash() {
+    local p="$1"
+    if [[ "$p" == "/" ]]; then
+        echo "$p"
+        return 0
+    fi
+
+    [[ "${p: -1}" == "/" ]] && p="${p:0:-1}" || true
+    [[ "${p: -1}" == "/" ]] && p="${p:0:-1}" || true
+    echo "$p"
+}
+
+_HAS_STDATA=0
+
+while IFS= read -t "0.3" -r line; do
+  _HAS_STDATA=1
+  strip-end-slash "$line"
+done
+
+if (( _HAS_STDATA != 1 )) && { (( $# < 1 )) || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; }; then
+    >&2 cat <<EOF
+    Usage:
+        $0 [paths...]
+        
+        Strips ending slashes from one or more paths, specified either as positional arguments,
+        or newline separated paths fed into stdin.
+
+    Examples:
+
+        user@host ~ $ $0 /home/user/
+        /home/user
+
+        user@host ~ $ $0 /tmp/example /hello/world/ /usr/share/                            
+        /tmp/example
+        /hello/world
+        /usr/share
+
+        user@host ~ $ echo -e "/tmp/example\\n/hello/world/\\n/usr/share/" | $0
+        /tmp/example
+        /hello/world
+        /usr/share
+
+
+    Part of https://github.com/Privex/utils
+    (C) 2020 Privex Inc. - https://www.privex.io
+
+EOF
+
+    exit 1
+fi
+
+if (( $# > 0 )); then
+    while (( $# > 0 )); do
+        strip-end-slash "$1"
+        shift
+    done
+elif (( _HAS_STDATA == 1 )); then
+    exit 0
+fi
+

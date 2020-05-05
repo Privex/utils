@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+_HAS_STDATA=0
+
+while IFS= read -t 1 -r line; do
+  printf ' [FAKE] Received stdin data: "%s"\n' "$line"
+  _HAS_STDATA=1
+done
+
+if (( _HAS_STDATA == 0 )); then
+    echo " [FAKE] No stdin data received after 1 second timeout"
+fi
+
+echo " [FAKE] This is a mock sfdisk executable"
+echo " [FAKE] The following arguments were passed: $*"
+echo " [FAKE] Exiting mock sfdisk now."

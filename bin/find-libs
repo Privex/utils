@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+if (( $# < 1 )) || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    >&2 echo "Usage:"
+    >&2 echo "    $0 path_to_binary [libfolder='lib'] [additional_libfolders...]"
+    >&2 echo
+    >&2 echo " Returns a list of absolute paths (separated by newlines) to libraries which 'path_to_binary' depends on to function."
+    >&2 echo " Useful when building a restricted chroot for a user / application, so you can copy in any required libs."
+    >&2 echo
+    >&2 echo
+    >&2 echo "      path_to_binary - An absolute or relative path to a binary to output linked libraries for."
+    >&2 echo "      libfolder - One or more library folders to scan (excluding leading slash). E.g. 'lib' or 'usr/lib'."
+    >&2 echo
+    >&2 echo
+    >&2 echo "NOTE: Binaries can have libraries spread across several different folders."
+    >&2 echo "      The most common library folders are: /lib, /lib64, /usr/lib, /usr/lib64"
+    >&2 echo
+    >&2 echo
+    >&2 echo "Examples:"
+    >&2 echo "    $0 /bin/bash"
+    >&2 echo "    $0 /bin/ping usr/lib"
+    >&2 echo "    $0 /bin/telnet lib64"
+    >&2 echo "    $0 /usr/bin/mysql lib lib64 usr/lib usr/lib64"
+    >&2 echo
+    >&2 echo " (C) 2020 Privex Inc. and Someguy123 - part of https://github.com/Privex/utils"
+    >&2 echo
+    
+    exit 1
+fi
+
+_find-libs() {
+    #ldd "$1" | sed -En 's#.*(/'$2'/[a-zA-Z0-9_./-]+\.so(.[0-9])+?).*#\1#pg'
+    #ldd "$1" | sed -En 's#[ ]+([a-zA-Z0-9_.-]+ => )?(/'$2'/[a-zA-Z0-9_./-]+\.so(.[0-9])+?) ([a-zA-Z0-9]+)#\2#pg'
+    ldd "$1" | sed -En 's#[ \t]+([a-zA-Z0-9_.-]+ => )?(/'$2'/[a-zA-Z0-9_./-]+\.so(.[0-9])+?) \([a-zA-Z0-9]+\)#\2#pg'
+}
+
+binfile="$1"
+shift
+
+libfolder="lib"
+
+if (( $# > 0 )); then
+    while (( $# > 0 )); do
+        libfolder="$1"
+        _find-libs "$binfile" "$libfolder"
+        shift
+    done
+else
+    _find-libs "$binfile" "$libfolder"
+fi
+

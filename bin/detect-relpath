@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+_detect_relpath() {
+    local rel_path=""
+    local start_path="$(strip-end-slash "$2")" end_path="$(strip-end-slash "$1")"
+
+    cd "$start_path"
+    
+    while [[ "$(pwd)" != "${end_path}" ]]; do
+        cd ..
+        rel_path="${rel_path}../"
+        if [[ "$(pwd)" == "/" ]] || [[ -z "$(pwd)" ]]; then
+            >&2 echo -e "\n[_detect_relpath] Failed to reach ${end_path} from ${start_path}\n"
+            cd "$start_path"
+            return 1
+        fi
+    done
+    cd "$start_path"
+    echo "${rel_path:0:-1}"
+}
+
+
+if (( $# < 1 )); then
+    >&2 echo "
+    Usage: $0 end_path [start_path=PWD]
+
+    Example: 
+    
+        ### You can specify two folders: the 'end' folder, and 'start' folder, and it will
+        ### return the relative path to end_path from start_path.
+        user@host ~ $ $0 /tmp /tmp/some/deep/folder
+        ../../..
+
+        ### Alternatively, if you only specify the 'end' folder, it will assume that the 'start' folder
+        ### is the current working directory.
+        user@host /usr/local/share/python3.6 $ $0 /usr/local
+        ../..
+
+
+    Part of https://github.com/Privex/utils
+    (C) 2020 Privex Inc. - https://www.privex.io
+    
+    "
+    exit 1
+fi
+
+_stpath="$PWD"
+_endpath="$1"
+
+(( $# > 1 )) && _stpath="$2"
+
+_detect_relpath "$_endpath" "$_stpath"
+

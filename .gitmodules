@@ -1,0 +1,3 @@
+[submodule "repos/slotmgr"]
+	path = repos/slotmgr
+	url = https://github.com/Privex/slotmgr.git

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Mass RAID partitioning tool
+# Part of Privex/utils
+#
+# +===================================================+
+# |                 © 2020 Privex Inc.                |
+# |               https://www.privex.io               |
+# +===================================================+
+# |                                                   |
+# |        Originally Developed for internal use      |
+# |        at Privex Inc                              |
+# |                                                   |
+# |        Core Developer(s):                         |
+# |                                                   |
+# |          (+)  Chris (@someguy123) [Privex]        |
+# |                                                   |
+# |        Official Repo:                             |
+# |                                                   |
+# |           github.com/Privex/utils                 |
+# |                                                   |
+# +===================================================+
+#
+# raid-part - Small utility for quickly partitioning disks for RAID usage in bulk
+# Copyright (c) 2020    Privex Inc. ( https://www.privex.io/ )
+# 
+# License: GNU GPLv3
+#
+# Github: https://github.com/Privex/utils
+#
+############
+
+# Array of Privex ShellCore modules to be loaded during ShellCore initialisation.
+SG_LOAD_LIBS=(gnusafe helpers trap_helper traplib)
+
+# Error handling function for ShellCore
+_sc_fail() { >&2 echo "Failed to load or install Privex ShellCore..." && exit 1; }
+
+# If `load.sh` isn't found in the user install / global install, then download and run the auto-installer
+# from Privex's CDN.
+[[ -f "${HOME}/.pv-shcore/load.sh" ]] || [[ -f "/usr/local/share/pv-shcore/load.sh" ]] || \
+    { curl -fsS https://cdn.privex.io/github/shell-core/install.sh | bash >/dev/null; } || _sc_fail
+
+# Attempt to load the local install of ShellCore first, then fallback to global install if it's not found.
+[[ -d "${HOME}/.pv-shcore" ]] && source "${HOME}/.pv-shcore/load.sh" || \
+    source "/usr/local/share/pv-shcore/load.sh" || _sc_fail
+
+error_control 0
+
+: ${DRY_RUN=0}
+: ${ALLOW_MISSING_DISKS=0}
+: ${DISABLE_SAFETY_DELAY=0}
+: ${USE_GPT=0}
+
+rp-help() {
+	msg yellow "USAGE: raid_part [disk1] [disk2] [disk3] ..."
+	msg yellow "EXAMPLE: raid_part /dev/sda /dev/sdb /dev/nvme[0-3]n1\n"
+    msg bold cyan "Environment Variables:\n"
+    msg cyan "\n\t - DRY_RUN (default: 0) - Set DRY_RUN=1 and raid_part will only print the 'dangerous' commands, instead of running them"
+    msg cyan "\n\t - ALLOW_MISSING_DISKS (default: 0) - Set ALLOW_MISSING_DISKS=1 and raid_part will ignore any" \
+                    "passed disks that don't appear to exist, and will try to partition them anyway."
+
+    msg cyan "\n\t - DISABLE_SAFETY_DELAY (default: 0) - Set DISABLE_SAFETY_DELAY=1 and raid_part will skip the 10 second" \
+                "warning / re-consideration period, which warns the user to push CTRL-C if they see something wrong."
+    msg cyan "\n\t - USE_GPT (default: 0) - Set USE_GPT=1 to create a GPT partition table instead of DOS/MBR." 
+    msg
+}
+
+if (( $# < 1 )); then
+	msgerr bold red "**ERROR**: You must specify at least one disk to partition"
+    >&2 rp-help
+    error_control 1  # Tell ShellCore error handler to ignore the following non-zero exit
+	exit 1
+fi
+
+_help_cmds=('help' '--help' '-help' '-?' '?' '-h' '/?' '/help')
+
+if containsElement "$1" "${_help_cmds[@]}"; then
+    rp-help
+    exit
+fi
+
+
+for d in "$@"; do
+    msgerr " [...] Confirming disk '$d' exists..."
+    if [[ -f "$d" ]]; then
+        msgerr green " [+++] Disk '$d' appears to exist :)"
+    else
+        msgerr bold red " [!!!] **ERROR**: The disk/file '$d' does not appear to exist. For safety, raid_part must exit."
+        msgerr red " [!!!] If you are CERTAIN '$d' exists, and is a valid, partionable disk - then you can disable this"
+        msgerr red " [!!!] sanity test by running:\n"
+        msgerr "     ALLOW_MISSING_DISKS=1 $0 $*\n"
+        raise_error " [!!!] Exiting raid_part due to missing disk/file '$d'" "${BASH_SOURCE[0]}" $LINENO
+    fi
+done
+
+
+
+msg red "**WARNING**: The following disks will have **any existing partition table DESTROYED**"
+msg red "Then a singular partition filling the disk will be created, of type 'Linux RAID autodetect'\n"
+
+
+for d in "$@"; do
+	msg purple "    - '$d'"
+done
+msg
+
+if (( DISABLE_SAFETY_DELAY == 1 )); then
+    msgerr bold yellow "\n [!!!] DISABLE_SAFETY_DELAY is set to 1. Skipping 10 second warning / reconsideration period.\n"
+else
+    msgerr bold red "\n !!! To cancel, hit CTRL-C  **NOW**. You have 10 seconds before the drives will be repartitioned.\n"
+    sleep 5 && msgerr red " !!! 5 seconds before repartitioning...\n" && sleep 5
+fi
+
+msg yellow " >>> Repartitioning drives now: $* \n"
+
+
+######
+# format_raid disk [is_gpt=0] [part_type=auto] [part_label=dos]
+#
+format_raid() {
+    (( $# < 1 )) && raise_error " [!!!] format_raid expects at least one argument.\n Usage: format_raid disk [is_gpt=0] [part_type=auto] [part_label=dos]"
+    local disk="$1" is_gpt="$USE_GPT" part_type="auto"
+    local part_label="dos"
+
+    (( $# > 1 )) && is_gpt="$2"
+    (( $# > 2 )) && part_type="$3"
+    { (( $# > 3 )) && part_label="$4"; } || { (( is_gpt == 1 )) && part_label="gpt"; } || true
+    
+    [[ "$part_type" == "auto" ]] && { [[ "$part_label" == "dos" ]] && part_type="fd" || part_type="L"; } || true
+
+    if (( DRY_RUN != 0 )); then
+        msgerr cyan " >>> DRY_RUN is set non-zero. Will not touch disks."
+        msgerr cyan " > Command that would be ran:\n"
+        msg bold "\techo \",,$part_type\" | sudo sfdisk -X \"$part_label\" \"$disk\"\n"
+    else
+        echo ",,$part_type" | sudo sfdisk -X "$part_label" "$disk"
+    fi
+}
+
+for d in "$@"; do
+	msg green "\n [...] Partitioning disk '$d' with singular RAID partition...\n"
+    format_raid "$d"
+
+    #if (( DRY_RUN != 0 )); then
+    #    msgerr cyan " >>> DRY_RUN is set non-zero. Will not touch disks."
+    #    msgerr cyan " > Command that would be ran:\n"
+	#    msg bold "    echo \"type=fd\" | sudo sfdisk \"$d\"\n"
+    #else
+    #    echo "type=fd" | sudo sfdisk "$d"
+    #fi
+	msg green "\n [+++] Successfully partitioned disk '$d' with singular RAID partition!\n"
+done
+
+msg bold green "\n [+++] Finished repartitioning drives: $* \n"
+
+ALLOW_MISSING_DISKS=0
+

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#           This is a component of Privex/utils                 #
+#           A project of various random small scripts.          #
+#                                                               #
+#                     Copyright (c) 2020                        #
+#                                                               #
+#           Privex Inc. ( https://www.privex.io/ )              #
+#                                                               #
+#           License: GNU GPLv3                                  #
+#                                                               #
+#           Github: https://github.com/Privex/utils             #
+#                                                               #
+#################################################################
+#
+# 'mockscript' is a very basic executable, designed to be
+# copied/symlinked to the name of another more "destructive"
+# program such as 'dd' or 'fdisk'.
+#
+# It simply prints out any data received via pipe (stdin), and
+# any command line arguments passed to it.
+#
+# Env vars:
+#
+#   MOCK_USE_STDERR (def: 0) - set to 1 to output messages to stderr instead of stdout
+#   MOCK_STDIN_TIMEOUT (def: 1) - number of seconds to wait for stdin data before giving up
+#
+# Example:
+#
+#   user@host $ echo -e "potato\norange" | MOCK_USE_STDERR=1 ./mockscript hello world
+#       [FAKE] Received stdin data: "potato"
+#       [FAKE] Received stdin data: "orange"
+#       [FAKE] This is a mock ./mockscript executable
+#       [FAKE] The following arguments were passed: hello world
+#       [FAKE] Exiting mock ./mockscript now.
+#
+#################################################################
+
+
+: ${MOCK_USE_STDERR=0}
+: ${MOCK_STDIN_TIMEOUT=1}
+_HAS_STDATA=0
+
+_pmsg() { 
+    if (( MOCK_USE_STDERR == 1 )); then >&2 echo "$@"; else echo "$@"; fi
+}
+
+while IFS= read -t "$MOCK_STDIN_TIMEOUT" -r line; do
+  _m=' [FAKE] Received stdin data: "%s"\n' 
+  (( MOCK_USE_STDERR == 1 )) && >&2 printf "$_m" "$line" || printf "$_m" "$line"
+  _HAS_STDATA=1
+done
+
+(( _HAS_STDATA == 0 )) && _pmsg " [FAKE] No stdin data received after 1 second timeout"
+
+_pmsg " [FAKE] This is a mock $0 executable"
+_pmsg " [FAKE] The following arguments were passed: $*"
+_pmsg " [FAKE] Exiting mock $0 now."
+
+
+
