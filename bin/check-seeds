@@ -203,9 +203,9 @@ try:
 except (ImportError, AttributeError) as e:
     log.debug("Missing python-dotenv package, not loading .env file. Ex: %s %s", type(e), str(e))
 
-TIMEOUT = settings.TIMEOUT = env_cast('TIMEOUT', float, 8.0)
-RETRY_DELAY = settings.RETRY_DELAY = env_cast('RETRY_DELAY', float, 1.0)
-RETRIES = settings.RETRIES = env_int('RETRIES', 3)
+TIMEOUT = settings.TIMEOUT = env_cast('TIMEOUT', float, 4.0)
+RETRY_DELAY = settings.RETRY_DELAY = env_cast('RETRY_DELAY', float, 0.4)
+RETRIES = settings.RETRIES = env_int('RETRIES', 2)
 
 try:
     import geoip2.database
