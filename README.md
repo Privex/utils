@@ -93,8 +93,3 @@ a separate license.
 
 Please read [LICENSE.txt](ttps://github.com/Privex/utils/blob/master/LICENSE.txt) and
 [gpl-3.0.txt](ttps://github.com/Privex/utils/blob/master/gpl-3.0.txt) for more information.
-
-
-
-
-

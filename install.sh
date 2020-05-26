@@ -54,9 +54,11 @@ cd "$DIR"
 UTIL_INSTALL_DIR=$("${DIR}/bin/strip-end-slash" "$UTIL_INSTALL_DIR")
 
 INSTALL_BINS=(
+    "${DIR}/bin/check-seeds"
     "${DIR}/bin/copy-bin-chroot"
     "${DIR}/bin/detect-relpath"
     "${DIR}/bin/find-libs"
+    "${DIR}/bin/geolocate"
     "${DIR}/bin/lib-copy"
     "${DIR}/bin/mk-user-chroot"
     "${DIR}/bin/mockscript"

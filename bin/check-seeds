@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+#
+# Extracts a list of seed nodes from a Hive/Steem config.ini file, checks if they work by doing
+# a simple connect + recieve data test against their specified port, and outputs the working ones 
+# in config.ini format.
+# 
+# Supports using Maxmind's GeoIP2 library + database files to resolve the location and ISP of the
+# seeds, so you can quickly determine where each seed is located geographically.
+#
+#   RETRY_DELAY=0.1 RETRIES=1 TIMEOUT=1 check-seeds 2>/dev/null
+#
+# Basic usage:
+# 
+#       # With no arguments, it will try to find a config.ini file in various search locations
+#       $ check-seeds
+#
+#       $ check-seeds -h    # Show the help page for the script
+#
+#       # Speed up scanning by lowering the connect timeout + amount of retries allowed + delay between retries
+#       # and silence log messages (only output working seeds)
+#       $ RETRY_DELAY=0.1 RETRIES=1 TIMEOUT=1 check-seeds 2>/dev/null
+#
+#       # You can pipe seeds in via stdin in any supported format. Below example uses "flat" format
+#       $ echo -e "hiveseed-se.privex.io:2001\nanyx.io:2001\nrpc.ausbit.dev:2001" | check-seeds 2>/dev/null
+#
+#################################################################
+
+import argparse
+import re
+import socket
+import textwrap
+import logging
+import logging.config
+import sys
+from typing import Optional, List, Tuple, Dict, Union
+from os import getenv as env, getcwd, path
+from os.path import exists, join, expanduser
+from decimal import Decimal
+from ipaddress import ip_address
+
+def err(*args, file=sys.stderr, **kwargs):
+    print(*args, file=file, **kwargs)
+
+try:
+    from privex.helpers import empty, retry_on_err, dec_round, DictObject, empty_if, env_cast, env_int, ErrHelpParser
+    from privex.helpers.net import resolve_ip, ip_is_v4, ip_is_v6
+    
+    from privex.helpers.exceptions import GeoIPAddressNotFound, GeoIPDatabaseNotFound
+    from privex.loghelper import LogHelper
+except (ImportError, AttributeError, KeyError) as e:
+    err("ERROR: Missing packages. Exception:", type(e), str(e))
+    err("\n======================================\n")
+    err("Please install the package 'privex-helpers' from PyPi.")
+    err("\n\tpython3 -m pip install -U 'privex-helpers[net]'")
+    err("\nOn some systems, you may have to simply use 'pip3':")
+    err("\n\tpip3 install -U 'privex-helpers[net]'")
+    err("\n\n")
+    sys.exit(1)
+
+
+def find_conf() -> Optional[str]:
+    for c in search_conf:
+        if exists(c):
+            return c
+    return None
+
+
+settings = DictObject(OUTPUT_SEEDS=sys.stdout, OUT_MODE='a', OUT_FMT='modern', USE_GEOIP=False)
+
+# This should get rid of all handlers for the decorator
+#LogHelper('privex').copy_logger('privex.helpers', 'privex.helpers.decorators')
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': True,
+})
+
+_lh = LogHelper('privex.utils.check_seeds')
+csl_handler = _lh.add_console_handler(stream=sys.stderr)
+log = _lh.get_logger()
+
+
+relc_wit = 'witness_node_data_dir/config.ini'
+relc = f'data/{relc_wit}'
+search_conf = (
+    f'{getcwd()}/config.ini',
+    f'{getcwd()}/{relc}', f'{getcwd()}/{relc_wit}',
+    f'/hive/{relc}', f'/steem/{relc}',
+    expanduser(f'~/hive-docker/{relc}'), expanduser(f'~/steem-docker/{relc}'),
+    f'/hive/rpc1/{relc_wit}', f'/hive/rpc2/{relc_wit}',
+    f'/steem/rpc1/{relc_wit}', f'/steem/rpc2/{relc_wit}',
+    f'/root/hive-docker/{relc}', f'/root/steem-docker/{relc}',
+)
+
+txt_search = '- ' + ('\n        - '.join(search_conf))
+
+help_text = textwrap.dedent(f'''\
+
+    Part of https://github.com/Privex/utils
+    License: GNU GPL v3.0
+    Copyright (C) 2020  Privex Inc. (https://www.privex.io)   +    Someguy123 (https://github.com/Someguy123)
+
+    Basic usage:
+
+        {sys.argv[0]} [-h] [-v] [-o] [options...] (config)
+
+    If no path is specified, will search for config.ini within the current working directory,
+    followed by some common known paths for the Hive/Steem config.ini file.
+
+    Config search paths (if 'config' is not specified):
+
+        {txt_search}
+
+    Configs can also be piped in via stdin, in either 'modern', 'legacy' or 'flat' format:
+
+        $ echo -e "hiveseed-se.privex.io:2001\nanyx.io:2001\nrpc.ausbit.dev:2001" | {sys.argv[0]} 2>/dev/null
+        p2p-seed-node = hiveseed-se.privex.io:2001                   #  (SE, Stockholm)      (ASN: Privex Inc.)
+        p2p-seed-node = anyx.io:2001                                 #  (CA)                 (ASN: OVH SAS)
+        p2p-seed-node = rpc.ausbit.dev:2001                          #  (FI, Tuusula)        (ASN: Hetzner Online GmbH)
+
+    Log messages are printed to stderr, only the p2p-seed-node lines are printed to stdout.
+
+    This means that you can output the working seeds straight into a file:
+
+        {sys.argv[0]} > seeds.txt
+        # Alternatively you can use the '-o' flag. You can also use '-f' to customise the output format
+        {sys.argv[0]} -o workingseeds.txt -f flat
+    
+    Or you can silence the log messages and only print the working seed config:
+
+        {sys.argv[0]} 2> /dev/null
+    
+    Various env vars can be adjusted to speed up scanning:
+
+        RETRY_DELAY=0.1 RETRIES=1 TIMEOUT=1 {sys.argv[0]}
+
+''') + "\n    \n"
+
+parser = ErrHelpParser(
+    description='Hive/Steem Seed Scanner by Someguy123 ( https://peakd.com/@someguy123 ) / Privex Inc. ( https://www.privex.io )',
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog=help_text
+)
+
+parser.add_argument('-v', '--verbose', action='store_true', dest='verbose', default=False)
+parser.add_argument('-o', '--output', dest='output', default=None, type=str, 
+                    help="Output the working seeds to this file instead of stdout")
+
+parser.add_argument('-k', '--no-comments', dest='add_comments', action='store_false', default=True,
+                    help="Don't append comments with location / ISP info to the end of each working seed line")
+
+parser.add_argument('-m', '--output-mode', dest='out_mode', default=settings.OUT_MODE, type=str, choices=['a', 'w', 'x'], 
+                    help="Open OUTPUT with this file handle mode (a = append, w = overwrite, x = write only if the file doesn't exist)")
+
+parser.add_argument(
+    '-f', '--output-format', dest='out_fmt', default=settings.OUT_FMT, type=str, choices=['modern', 'legacy', 'flat'], 
+    help="Output working seeds in a certain format. Default: modern || modern 'p2p-seed-node = example.org:2001' || "
+         "legacy 'seed-node = example.org:2001' || flat 'example.org:2001'",
+)
+
+parser.add_argument('config', nargs='?', type=str, default=None, help="The Hive/Steem config.ini file to extract seeds from.")
+parser.set_defaults(verbose=False, output=None, add_comments=True)
+args = parser.parse_args()
+
+if args.verbose: csl_handler.setLevel(logging.DEBUG)
+
+log.debug("Parser args: %s", args)
+
+settings.ADD_COMMENTS = args.add_comments
+settings.OUT_FMT = args.out_fmt
+
+if not empty(args.output):
+    settings.OUTPUT_SEEDS = args.output
+    settings.OUT_MODE = args.out_mode
+
+try:
+    import dotenv
+    try:
+        dotenv.load_dotenv()
+    except AttributeError:
+        dotenv.read_dotenv()
+except (ImportError, AttributeError) as e:
+    log.debug("Missing python-dotenv package, not loading .env file. Ex: %s %s", type(e), str(e))
+
+TIMEOUT = settings.TIMEOUT = env_cast('TIMEOUT', float, 8.0)
+RETRY_DELAY = settings.RETRY_DELAY = env_cast('RETRY_DELAY', float, 1.0)
+RETRIES = settings.RETRIES = env_int('RETRIES', 3)
+
+try:
+    import geoip2.database
+    from privex.helpers.geoip import geolocate_ip
+    from privex.helpers.plugin import get_geoip
+    settings.USE_GEOIP = True
+except (ImportError, AttributeError, KeyError) as e:
+    log.info("Did not detect GeoIP2 Python package. Cannot automatically resolve geolocation country for seeds")
+    log.info("To use the geolocation feature, please run 'python3 -m pip install geoip2'")
+    log.info("Then download the GeoLite2 City and ASN GeoIP databases (Maxmind Binary Database format) from the following URL:\n")
+    log.info("\thttps://dev.maxmind.com/geoip/geoip2/geolite2/\n")
+    log.info("Place the GeoLite2 mmdb files in: /usr/share/GeoIP\n")
+    log.info("Error was: %s %s\n", type(e), str(e))
+
+try:
+    get_geoip('city')
+    get_geoip('asn')
+except GeoIPDatabaseNotFound:
+    log.exception("Missing one or more GeoIP database files. Disabling GeoIP functionality.")
+    settings.USE_GEOIP = False
+
+
+def print_help():
+    err(f"Usage: {sys.argv[0]} (path_to_config_ini)\n")
+    err("If no path is specified, will search for config.ini within the current working directory,")
+    err("followed by some common known paths for the Hive/Steem config.ini file.\n")
+    err("Search paths:")
+    for c in search_conf:
+        err(f"\t{c}")
+    err()
+    err("Log messages are printed to stderr, only the p2p-seed-node lines are printed to stdout.")
+    err("This means that you can output the working seeds straight into a file:\n")
+    err(f"      {sys.argv[0]} > seeds.txt\n")
+    err("Or you can silence the log messages and only print the working seed config:")
+    err(f"      {sys.argv[0]} 2> /dev/null\n")
+    err()
+
+
+socket.setdefaulttimeout(settings.TIMEOUT)
+
+@retry_on_err(settings.RETRIES, settings.RETRY_DELAY)
+def test_seed(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect((host, int(port)))
+        s.recv(100)
+
+
+class SeedScanner:
+    SEED_REGEX = re.compile(r'^p2p-seed-node[ \t]+?=[ \t]+?([a-z0-9.-]+):([0-9]+)', re.MULTILINE)
+    LEGACY_SEED_REGEX = re.compile(r'^seed-node[ \t]+?=[ \t]+?([a-z0-9.-]+):([0-9]+)', re.MULTILINE)
+    FLAT_SEED_REGEX = re.compile(r'^([a-z0-9.-]+):([0-9]+)', re.MULTILINE)
+
+    geo_data: Dict[str, Tuple[str, str, str, str]]   # ip: (country_code, country, city, asn)
+
+    def __init__(self, config=None, quiet=False, **kwargs):
+        self.working_seeds, self.broken_seeds, self.geo_data = [], [], {}
+        self.seeds = []
+        self.quiet = quiet
+
+        self.config = empty_if(config, settings.get('conf_file'))
+        self.out_fmt = kwargs.get('out_fmt', settings.get('OUT_FMT', 'modern'))
+        self.out_file = kwargs.get('out_file', settings.get('OUTPUT_SEEDS', sys.stdout))
+        self.out_mode = kwargs.get('out_mode', settings.get('OUT_MODE', 'a'))
+        self.add_comments = kwargs.get('add_comments', settings.get('ADD_COMMENTS', True))
+
+        log.debug("SeedScanner initialised. config: %s || quiet: %s || add_comments: %s", self.config, self.quiet, self.add_comments)
+        log.debug("out_file: %s || out_mode: %s || out_fmt: %s", self.out_file, self.out_mode, self.out_fmt)
+    
+    def line_geo(self, host) -> str:
+        ln = ""
+        if host not in self.geo_data:
+            return ""
+        gh = self.geo_data[host]
+        loc, _as = None, None
+        if gh[0] is not None: # Add country if known
+            loc = f"({gh[0]}"
+            if gh[2] is not None: # Add city if known
+                loc += f", {gh[2]}"
+            loc += ')'
+        # Add ASN
+        if gh[3] is not None: _as = f"(ASN: {gh[3]})"
+        # Glue the city + ASN together with padding
+        if loc is not None: ln += f" {loc:<20}"
+        if _as is not None: ln += f" {_as}"
+        return ln
+
+    @classmethod
+    def detect_seed_nodes(cls, data: str, fmt: str = 'modern') -> Optional[List[Tuple[str, str]]]:
+        if fmt.lower() in ['legacy', 'leg', 'pre-appbase', 'seed-node']:
+            log.debug("Using LEGACY_SEED_REGEX to scan for matching seeds")
+            return cls.LEGACY_SEED_REGEX.findall(str(data))
+        if fmt.lower() in ['flat', 'simple', 'newline', 'nl', 'txt', 'line', 'lines']:
+            log.debug("Using FLAT_SEED_REGEX to scan for matching seeds")
+            return cls.FLAT_SEED_REGEX.findall(str(data))
+        data = str(data)
+        log.debug("Trying modern SEED_REGEX to scan for matching seeds")
+        res = cls.SEED_REGEX.findall(data)
+        # If no seeds are found while scanning using the modern format regex, then self-call this method
+        # with legacy mode, in-case it's a legacy config.ini
+        res = cls.detect_seed_nodes(data, fmt='legacy') if empty(res, itr=True) else res
+        # If res is still empty, try again but with "flat" format mode.
+        res = cls.detect_seed_nodes(data, fmt='flat') if empty(res, itr=True) else res
+        res = empty_if(res, None, itr=True)
+        return res
+
+    @classmethod
+    def parse_stdin(cls, fmt: str = 'modern') -> Optional[List[Tuple[str, str]]]:
+        lines = [l.strip() for l in sys.stdin]
+        log.debug("parse_stdin loaded %d lines from stdin: %s", len(lines), lines)
+        return cls.detect_seed_nodes("\n".join(lines), fmt=fmt)
+    
+    @classmethod
+    def parse_config(cls, config_path: str, fmt: str = 'modern') -> Optional[List[Tuple[str, str]]]:
+        with open(config_path, 'r') as fp:
+            config_file = fp.read()
+        return cls.detect_seed_nodes(config_file, fmt=fmt)
+    
+    def msgerr(self, *args, **kwargs):
+        if not self.quiet:
+            err(*args, **kwargs)
+
+    def scan_geo(self, host: str) -> Tuple[str, str, str, str]:
+        self.geo_data[host] = (None, None, None, None)
+        if not settings.USE_GEOIP:
+            return False
+        ip = resolve_ip(host, 'v4')
+        ip = resolve_ip(host, 'v6') if empty(ip) else ip
+        if not empty(ip):
+            try:
+                gd = geolocate_ip(ip)
+                self.geo_data[host] = (gd.country_code, gd.country, gd.city, gd.as_name)
+            except GeoIPAddressNotFound as e:
+                log.warning("IP address %s wasn't found in GeoIP database - Error: %s %s", ip[0], type(e), str(e))
+            except ValueError as e:
+                log.warning("Invalid IP address %s - Error: %s %s", ip, type(e), str(e))
+        return self.geo_data[host]
+    
+    def scan_host(self, host: str, port: Union[str, int]):
+        try:
+            if not self.quiet: err(f'Testing seed {host}:{port}')
+            test_seed(host,port)
+            if not self.quiet: err(host, port, "is online\n")
+            self.working_seeds.append( (host, port,) )
+            # working += 1
+            return True
+        except (socket.timeout, ConnectionRefusedError, ConnectionResetError, socket.gaierror) as e:
+            self.broken_seeds.append( (host, port,) )
+            log.warning('%s %s connection failed: %s %s\n', host, port, type(e), str(e))
+            return False
+        # err()
+
+    def output_seed(self, host, port, out_file=sys.stdout, fmt: str = 'modern', **kwargs):
+        fmts = dict(modern=f'p2p-seed-node = {host}:{port}', legacy=f'seed-node = {host}:{port}', flat=f'{host}:{port}')
+        ln = fmts.get(fmt, fmts['modern'])
+        add_comment, padding = kwargs.get('add_comment', True), kwargs.get('padding', 60)
+        if add_comment:
+            ln = f'{ln:<{padding}} # {self.line_geo(host)}'
+        print(ln, file=out_file)
+    
+    def output_seeds(self, seed_list: List[Tuple[str, int]], out_file=sys.stdout, **kwargs):
+        for host, port in seed_list:
+            self.output_seed(host=host, port=port, out_file=out_file, **kwargs)
+
+    def print_working(self):
+        self.msgerr("-----------------------\n")
+        self.msgerr("--- Working Seed List ---\n")
+        s_out, s_mode = settings.OUTPUT_SEEDS, settings.OUT_MODE
+        opts = dict(fmt=self.out_fmt, add_comment=self.add_comments)
+        if s_out == sys.stdout:
+            return self.output_seeds(self.working_seeds, **opts)
+        self.msgerr(f" >>> Outputting {len(self.working_seeds)} seeds to file '{s_out}' using file handle mode '{s_mode}'")
+        with open(s_out, s_mode) as fp:
+            self.output_seeds(self.working_seeds, out_file=fp, **opts)
+
+    def main(self):
+
+        if sys.stdin.isatty():
+            self.seeds = self.parse_config(self.config)
+            self.msgerr(f'Loaded {len(self.seeds)} seeds from {self.config}')
+        else:
+            self.seeds = self.parse_stdin()
+            self.msgerr(f'Loaded {len(self.seeds)} seeds from STDIN')
+        self.msgerr('-----------------------')
+
+        for host, port in self.seeds:
+            self.scan_geo(host)
+            self.scan_host(host, port)
+
+        self.print_working()
+        print()
+        self.msgerr("\n-----------------------\n")
+        self.msgerr("--- BROKEN Seed List ---\n")
+        if not self.quiet:
+            self.output_seeds(self.broken_seeds, out_file=sys.stderr, fmt='flat', padding=30)
+        total, working = len(self.seeds), len(self.working_seeds)
+        work_pct = Decimal('0.00')
+        if working > 0 and total > 0:
+            work_pct = dec_round((Decimal(working) / Decimal(total)) * Decimal('100'))
+
+        self.msgerr("\n-----------------------\n")
+        self.msgerr(f"Total seeds:         {total}")
+        self.msgerr(f"Working seeds:       {working}")
+        self.msgerr(f"Broken seeds:        {total-working}")
+        self.msgerr(f"% working:           {work_pct} %")
+        self.msgerr()
+
+
+
+if __name__ == '__main__':
+    if sys.stdin.isatty():
+        if empty(args.config):
+            settings.conf_file = find_conf()
+            if not settings.conf_file:
+                err("\n [!!!] No config was specified as an argument, nor could one be found in the default search paths.\n")
+                parser.print_help()
+                parser.exit(1)
+        else:
+            settings.conf_file = args.config
+    
+    scanner = SeedScanner()
+    scanner.main()
+
+
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################

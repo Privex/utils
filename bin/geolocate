@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+import sys
+import geoip2.database
+import socket
+from geoip2.errors import AddressNotFoundError
+from ipaddress import ip_address
+from socket import gethostbyaddr, herror, gethostbyname
+
+def err(*args, file=sys.stderr, **kwargs):
+    print(*args, file=file, **kwargs)
+
+try:
+    from privex.helpers import ip_is_v4, resolve_ips, geolocate_ip, GeoIPAddressNotFound, settings
+
+except (ImportError, AttributeError, KeyError) as e:
+    err("ERROR: Missing packages. Exception:", type(e), str(e))
+    err("\n======================================\n")
+    err("Please install the package 'privex-helpers' from PyPi.")
+    err("\n\tpython3 -m pip install -U privex-helpers")
+    err("\nOn some systems, you may have to simply use 'pip3':")
+    err("\n\tpip3 install -U privex-helpers")
+    err("\n\n")
+    sys.exit(1)
+
+
+def lookup(ip):
+    g = geolocate_ip(ip)
+    print("ISP:    \t", g.as_name)
+    print("Country:\t", g.country)
+    print("City:   \t", g.city)
+
+    try:
+        rdns = gethostbyaddr(ip)
+        print('rDNS:   \t', rdns[0])
+    except (Exception, herror) as e:
+        print('rDNS:   \tERROR - ', type(e), str(e))
+
+if len(sys.argv) < 2:
+    print(f'Usage: {sys.argv[0]} [ip]')
+    print("""
+
+    Looks up the Country, City, ISP and Reverse DNS for a given IPv4/v6 address or hostname.
+
+    Part of https://github.com/Privex/utils
+    License: GNU GPL v3.0
+    Copyright (C) 2020  Privex Inc. (https://www.privex.io)   +    Someguy123 (https://github.com/Someguy123)
+    """)
+    sys.exit(1)
+
+_LN = "\n-----------------------------------\n"
+
+ips = resolve_ips(sys.argv[1])
+for ip in ips:
+    print(_LN)
+    ver = "v4" if ip_is_v4(ip) else "v6"
+    print(f"IP{ver} Addr:", ip, sep="\t ")
+    try:
+        lookup(ip)
+    except (GeoIPAddressNotFound, AddressNotFoundError):
+        err(_LN)
+        err(f'Error: The address {ip} was not found in GeoIP...\n')
+        err(f'GeoIP databases used:\n\n\tCity: {settings.GEOCITY}\n\tASN: {settings.GEOASN}\n')
+
+print(_LN)
+
+
