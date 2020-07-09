@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+import tempfile
+import logging
+import sys
+import argparse
+try:
+    import png
+except ImportError:
+    print("ERROR: could not import png module.", file=sys.stderr)
+    print("Please run:   sudo -H pip3 install -U pypng", file=sys.stderr)
+    sys.exit(1)
+
+from collections import namedtuple
+
+try:
+    from privex.helpers import empty, empty_if, stringify, byteify, ErrHelpParser, T
+except ImportError:
+    print("ERROR: could not import privex.helpers module.", file=sys.stderr)
+    print("Please run:   sudo -H pip3 install -U privex-helpers", file=sys.stderr)
+    sys.exit(1)
+
+# try:
+#     from colorama import Fore
+# except ImportError:
+#     print("Warning: package 'colorama' not installed. Unable to colorise console output.", file=sys.stderr)
+
+
+from os import getcwd, makedirs
+from os.path import join, abspath, isabs, basename, dirname, exists, isdir
+from typing import Union, Dict, Optional, Tuple, List
+
+log = logging.getLogger(__name__)
+
+
+ASSET_DIR = getcwd()
+
+PNGTuple = namedtuple('PNGTuple', 'width height rows info')
+"""
+
+**Excerpt taken from PyPNG docs**
+
+The :meth:`png.Reader.read` method returns a 4‑tuple consisting of:
+
+    * `width`: Width of PNG image in pixels;
+    * `height`: Height of PNG image in pixes;
+    * `rows`: A sequence or iterator for the row data;
+    * `info`: An info dictionary containing much of the image metadata.
+
+"""
+
+def err(*args, file=sys.stderr, **kwargs):
+    print(*args, file=file, **kwargs)
+
+CSI = '\033['  # copied from the Python package 'colorama', licensed separately under the BSD 3-Clause license
+OSC = '\033]'  # copied from the Python package 'colorama', licensed separately under the BSD 3-Clause license
+BEL = '\007'   # copied from the Python package 'colorama', licensed separately under the BSD 3-Clause license
+
+
+def code_to_chars(code):
+    # copied from the Python package 'colorama', licensed separately under the BSD 3-Clause license
+    return CSI + str(code) + 'm'
+
+class AnsiCodes(object):
+    # !!! AnsiFore + AnsiCodes was copied from the Python package 'colorama', which is licensed
+    # !!! separately under the BSD 3-Clause license, and owned by Jonathan Hartley.
+    def __init__(self):
+        # the subclasses declare class attributes which are numbers.
+        # Upon instantiation we define instance attributes, which are the same
+        # as the class attributes but wrapped with the ANSI escape sequence
+        for name in dir(self):
+            if not name.startswith('_'):
+                value = getattr(self, name)
+                setattr(self, name, code_to_chars(value))
+
+
+class AnsiFore(AnsiCodes):
+    # !!! AnsiFore + AnsiCodes was copied from the Python package 'colorama', which is licensed
+    # !!! separately under the BSD 3-Clause license, and owned by Jonathan Hartley.
+    # Copyright Jonathan Hartley 2013. BSD 3-Clause license, see LICENSE file.
+    BLACK           = 30
+    RED             = 31
+    GREEN           = 32
+    YELLOW          = 33
+    BLUE            = 34
+    MAGENTA         = 35
+    CYAN            = 36
+    WHITE           = 37
+    RESET           = 39
+
+    # These are fairly well supported, but not part of the standard.
+    LIGHTBLACK_EX   = 90
+    LIGHTRED_EX     = 91
+    LIGHTGREEN_EX   = 92
+    LIGHTYELLOW_EX  = 93
+    LIGHTBLUE_EX    = 94
+    LIGHTMAGENTA_EX = 95
+    LIGHTCYAN_EX    = 96
+    LIGHTWHITE_EX   = 97
+
+Fore = AnsiFore()
+
+
+def paths_abs(*paths: str, base_folder: str = None, mk_parents: bool = False) -> Union[tuple, str]:
+    """
+    Make sure all paths in ``paths`` are absolute. Any relative paths will have ``base_folder`` prepended to them.
+    
+    If ``base_folder`` isn't specified, it defaults to :attr:`.ASSET_DIR`
+    
+        >>> paths_abs('banner.svg')
+        '/opt/asset-manager/assets/banner.svg'
+        >>> paths_abs('hello.jpg', 'test/example.png', '/tmp/another/example.svg')
+        ('/opt/asset-manager/assets/hello.jpg',
+         '/opt/asset-manager/assets/test/example.png',
+         '/tmp/another/example.svg',
+         )
+    
+    
+    :param str paths: One or more file/folder paths as string positional arguments
+    :param base_folder: (Optional) The base folder to prepend to relative paths (Default :attr:`.ASSET_DIR`)
+    :param bool mk_parents: (Default ``False``) If ``True``, calls :func:`.make_parents` on each path to ensure the parent folders
+                            of each path exist.
+    :return str path: If only one path is specified, then the absolute path is returned as a string
+    :return tuple paths: If more than one path is specified, then the absolute paths are returned as a tuple in order.
+    """
+    abs_paths = []
+    base_folder = empty_if(base_folder, ASSET_DIR)
+    
+    for p in paths:
+        if not isabs(p):
+            p = abspath(join(base_folder, p))
+        if mk_parents:
+            make_parents(p)
+        abs_paths.append(p)
+    
+    return tuple(abs_paths) if len(abs_paths) > 1 else abs_paths[0]
+
+
+def make_parents(path: str):
+    if not isabs(path):
+        path = abspath(path)
+    
+    parent = dirname(path)
+    if not exists(parent):
+        err("Parent folder %s didn't exist. Creating parent folders...", parent)
+        makedirs(parent)
+    return parent
+
+
+def get_extension(path: str, fallback: T = None, fail: bool = False) -> Optional[Union[str, T]]:
+    try:
+        ext = str(stringify(path)).split('.')[-1]
+        return ext
+    except Exception as e:
+        if fail:
+            raise e
+        return fallback
+
+
+def write_inplace_tmp(dest: str, writer: callable, *writer_args, _prefix=None, _suffix=None, **writer_kwargs):
+    dest = paths_abs(dest, mk_parents=True)
+    # To safely "in-place" regenerate a file, we write the data to a temp file, and then replace the
+    # original file's contents with the contents of the temp file.
+    with tempfile.NamedTemporaryFile(prefix=_prefix, suffix=_suffix) as tf:
+        # Write the new data into the temporary file
+        log.debug("Writing data into temp file: %s", tf.name)
+        with open(tf.name, 'wb') as fh:
+            writer(fh, *writer_args, **writer_kwargs)
+        log.debug("Opening temp file %s - copying contents into final destination %s", tf.name, dest)
+        # Now we read the temporary file, and write it's contents back into the destination file
+        with open(tf.name, 'rb') as fh:
+            with open(dest, 'wb') as dfh:
+                dfh.write(fh.read())
+    
+    return dest
+
+
+
+
+def load_png(source: str) -> PNGTuple:
+    source = paths_abs(source)
+    
+    # We read ``source`` into memory using PyPNG's reader.
+    reader = png.Reader(filename=source)
+    data = PNGTuple(*reader.read())
+    
+    # To ensure the file handle for the source file is closed, we delete the reader object.
+    del reader
+    
+    return data
+
+
+def process_png(source: str, dest: str, interlace=True, compression=None, **kwargs):
+    source, dest = paths_abs(source), paths_abs(dest, mk_parents=True)
+    if isdir(dest):
+        err(f"Destination '{dest}' is a directory... Appending filename from source:", basename(source))
+        dest = join(dest, basename(source))
+    log.debug("Loading PNG %s using load_png", source)
+    # Read the PNG using png.Reader and obtain a PNGTuple containing the PNG pixel rows + metadata
+    data = load_png(source)
+    
+    # We can get various PNG configuration data from the metadata of the source file.
+    # We try to get that metadata from the user before falling back to the PNG metadata.
+    writer_conf = dict(
+        interlace=empty_if(interlace, data.info.get('interlace', True)), compression=compression,
+        size=kwargs.pop('size', data.info.get('size')),
+        alpha=kwargs.pop('alpha', data.info.get('alpha', True)),
+        bitdepth=kwargs.pop('bitdepth', data.info.get('bitdepth')),
+        background=kwargs.pop('background', data.info.get('background')),
+        planes=kwargs.pop('planes', data.info.get('planes')),
+        greyscale=kwargs.pop('greyscale', data.info.get('greyscale', False)),
+    )
+    log.debug("Initialising png.Writer with config: %s || %s", writer_conf, kwargs)
+    writer = png.Writer(**writer_conf, **kwargs)
+    
+    if source == dest:
+        err("Source is equal to dest... Writing PNG inplace using write_inplace_tmp")
+        # To safely "in-place" re-render a PNG, we write the data to a temp file, and then replace the
+        # original file's contents with the contents of the temp file.
+        fh_writer = lambda f, rows: writer.write(f, rows)
+        dest = write_inplace_tmp(dest, fh_writer, data.rows, _suffix='.png')
+    else:
+        log.debug("Source is different to dest... Writing PNG normally to %s", dest)
+        with open(dest, 'wb') as fh:
+            writer.write(fh, data.rows)
+    
+    return dest
+
+def _process_file(src: str, dest: str, interlace: bool = True, compression: int = None):
+    print(f"{Fore.GREEN} >>> Interlacing / compressing image {src} and outputting to {dest}{Fore.RESET}\n")
+    print(f"     +++ Compression:", f'{Fore.RED}NO' if not compression else f'{Fore.CYAN}level {compression}', Fore.RESET)
+    print(f"     +++ Interlace:", f'{Fore.GREEN}YES' if interlace else f'{Fore.RED}NO', Fore.RESET, "\n")
+    new_dest = process_png(
+        source=src, 
+        dest=dest,
+        interlace=interlace,
+        compression=None if empty(compression, zero=True) else int(compression)
+    )
+    print(f"\n{Fore.GREEN} [+++] Finished. Outputted image to: {new_dest}{Fore.RESET}\n")
+
+
+def main():
+    parser = ErrHelpParser(
+        "interlace-png", formatter_class=argparse.RawTextHelpFormatter,
+        description="(Un-)Interlace / (De-)compress a PNG file. Can interlace a PNG file inplace if src == dest or dest not specified.\n\n"
+        "\tinterlace-png my_image.png                            # Simply interlace my_image.png inplace\n"
+        "\tinterlace-png -n my_image.png                         # Simply de-interlace my_image.png inplace\n"
+        "\tinterlace-png my_image.png new_image.png              # Interlace my_image.png into new_image.png\n"
+        "\tinterlace-png -c 8 my_image.png new_image.png         # Interlace and compress (level 8) my_image.png into new_image.png\n"
+        "\tinterlace-png -m a.png b.png c.png                    # Interlace multiple PNGs: a.png, b.png and c.png - inplace\n"
+    )
+    parser.add_argument("source_file", help="The PNG file to interlace/compress")
+    parser.add_argument("dest_file", default=None, nargs='*', help="Output the interlaced/compressed file here (default: replace original file)")
+    parser.add_argument('-c', "--compression", dest='compression', type=int, default=None, choices=[1,2,3,4,5,6,7,8,9],
+                        help="Compression level from 1 to 9 (By default, uses zlib default compression level)")
+    parser.add_argument('-n', "--no-interlace", dest="interlace", action="store_false", default=True, 
+                        help="Do not interlace / un-interlace source_file")
+    parser.add_argument('-m', "--multi", dest="multi", action="store_true", default=False, 
+                        help="Changes the dest_file argument to allow multiple source_file's")
+    parser.set_defaults(interlace=True, multi=False)
+
+
+    try:
+        args = parser.parse_args()
+    except Exception:
+        err("Invalid arguments.")
+        parser.print_help()
+        sys.exit(1)
+
+    src = args.source_file
+    compression, interlace = args.compression, args.interlace
+    multi = args.multi
+
+    if multi:
+        ls_src = [src] + list(args.dest_file)
+        print(f"\n{Fore.CYAN} [!!!] Multi mode enabled. Processing {len(ls_src)} PNG files in-place.{Fore.RESET}")
+        i = 0
+        for f in ls_src:
+            i += 1
+            print("\n ======================================================================== \n")
+            print(f"{Fore.YELLOW} [...] Processing file {i} / {len(ls_src)} {Fore.RESET}\n")
+            _process_file(f, f, interlace=interlace, compression=compression)
+        print("\n ======================================================================== \n")
+        print(f"\n{Fore.GREEN} [+++] Finished processing {len(ls_src)} PNG files :) {Fore.RESET}\n")
+    else:
+        dest = empty_if(args.dest_file, [args.source_file], itr=True)
+        _process_file(src, dest[0], interlace=interlace, compression=compression)
+
+
+
+if __name__ == "__main__":
+    main()
+

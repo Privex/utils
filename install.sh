@@ -59,6 +59,7 @@ INSTALL_BINS=(
     "${DIR}/bin/detect-relpath"
     "${DIR}/bin/find-libs"
     "${DIR}/bin/geolocate"
+    "${DIR}/bin/interlace-png"
     "${DIR}/bin/lib-copy"
     "${DIR}/bin/mk-user-chroot"
     "${DIR}/bin/mockscript"
@@ -104,6 +105,8 @@ if ! can_write "$UTIL_INSTALL_DIR"; then
     install() { sudo "install" "$@"; }
 fi
 
+msg green "\n >>> Installing binaries into ${UTIL_INSTALL_DIR} ...\n"
+
 for f in "${INSTALL_BINS[@]}"; do
     stripped_dest="$(strip_ext "$f")"
     stripped_dest="$(basename "$stripped_dest")"
@@ -111,7 +114,17 @@ for f in "${INSTALL_BINS[@]}"; do
     install -v "$f" "${UTIL_INSTALL_DIR}/${stripped_dest}"
 done
 
-msg bold green "\n\n [+++] Finished installing Privex utilities :)\n\n"
+msg green "\n >>> Installing Python packages listed in requirements.txt ...\n"
+
+if [[ "$(whoami)" != "root" ]]; then
+    msgerr yellow " [!!!] Current user is not root, cannot install Python packages globally."
+    msgerr yellow " [!!!] Will try sudo."
+    sudo -H pip3 install -U -r requirements.txt
+else
+    pip3 install -U -r requirements.txt
+fi
+
+msg bold green "\n\n [+++] Finished installing/updating Privex utilities :)\n\n"
 
 
 

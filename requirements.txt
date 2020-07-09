@@ -1,0 +1,7 @@
+privex-helpers[full]
+colorama
+pypng
+geoip2
+python-dotenv
+humanize
+

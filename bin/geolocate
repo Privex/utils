@@ -23,9 +23,7 @@
 #################################################################
 
 import sys
-import geoip2.database
 import socket
-from geoip2.errors import AddressNotFoundError
 from ipaddress import ip_address
 from socket import gethostbyaddr, herror, gethostbyname
 
@@ -33,15 +31,28 @@ def err(*args, file=sys.stderr, **kwargs):
     print(*args, file=file, **kwargs)
 
 try:
+    import geoip2.database
+    from geoip2.errors import AddressNotFoundError
+except (ImportError, AttributeError, KeyError) as e:
+    err("ERROR: Missing packages. Exception:", type(e), str(e))
+    err("\n======================================\n")
+    err("Please install the package 'geoip2' from PyPi.")
+    err("\n\tpython3 -m pip install -U geoip2")
+    err("\nOn some systems, you may have to simply use 'pip3':")
+    err("\n\tpip3 install -U geoip2")
+    err("\n\n")
+    sys.exit(1)
+
+try:
     from privex.helpers import ip_is_v4, resolve_ips, geolocate_ip, GeoIPAddressNotFound, settings
 
 except (ImportError, AttributeError, KeyError) as e:
     err("ERROR: Missing packages. Exception:", type(e), str(e))
     err("\n======================================\n")
-    err("Please install the package 'privex-helpers' from PyPi.")
-    err("\n\tpython3 -m pip install -U privex-helpers")
+    err("Please install the package 'privex-helpers[geoip]' from PyPi.")
+    err("\n\tpython3 -m pip install -U 'privex-helpers[geoip]'")
     err("\nOn some systems, you may have to simply use 'pip3':")
-    err("\n\tpip3 install -U privex-helpers")
+    err("\n\tpip3 install -U 'privex-helpers[geoip]'")
     err("\n\n")
     sys.exit(1)
 
