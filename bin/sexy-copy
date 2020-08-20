@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2020 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2020  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+
+has_command() {
+    command -v "$@" &>/dev/null
+}
+
+sudo() {
+    if (( EUID == 0 )); then
+        env "$@"
+    elif which sudo &>/dev/null; then
+        >&2 echo -e " >>> Running command with sudo (you may be prompted for your password): $*\n"
+        env sudo "$@"
+    else
+        >&2 echo -e " [!!!] Sudo needed for command '$*' - but sudo wasn't found. Will try and run command normally, but may not work!\n"
+        env "$@"
+    fi
+}
+
+xerr() {
+    >&2 echo -e "$@"
+}
+
+has_command curl || { 
+    has_command apt && {
+        xerr " [!!!] cURL not found. Auto-installing!\n"
+        xerr " [...] Running apt-get update -qy ..." && sudo apt-get update -qy > /dev/null
+        xerr " [...] Running apt-get install -qy curl ..." && sudo apt-get install -qy curl > /dev/null
+        xerr " [+++] Finished installing cURL :)\n"; 
+    } || {
+        has_command yum && {
+            xerr " [!!!] cURL not found. Auto-installing!\n"
+            xerr " [...] Running yum install -qy curl ..." && sudo yum install -qy curl > /dev/null
+            xerr " [+++] Finished installing cURL :)\n"; 
+        };
+    };
+}
+
+SG_LOAD_LIBS=(gnusafe helpers trap_helper traplib)
+
+_hm_shc="${HOME}/.pv-shcore/load.sh" _glb_shc="/usr/local/share/pv-shcore/load.sh"
+# echo "Checking if Privex ShellCore is installed / Downloading it..."
+_sc_fail() { >&2 echo "Failed to load or install Privex ShellCore..." && exit 1; }  # Error handling function for Privex ShellCore
+# If `load.sh` isn't found in the user install / global install, then download and run the auto-installer from Privex's CDN.
+[[ -f "$_hm_shc" ]] || [[ -f "$_glb_shc" ]] || { curl -fsS https://cdn.privex.io/github/shell-core/install.sh | bash >/dev/null; } || _sc_fail
+
+# echo "Loading Privex ShellCore..."
+# Attempt to load the local install of ShellCore first, then fallback to global install if it's not found.
+[[ -f "${_hm_shc}" ]] && source "$_hm_shc" || source "$_glb_shc" || _sc_fail
+
+SXC_INDENT=0
+
+_LN=$"\n-------------------------------------------------------------------------------------------\n"
+
+sxc-copyright() {
+    msg bold cyan  "    (C) Copyright 2020 Privex Inc. / Someguy123 - https://www.privex.io\n"
+    msg bold cyan  "    Official Repo (SOURCE):${RESET} https://github.com/Privex/utils"
+    msg bold cyan  "    License:${RESET} GNU GPL v3.0\n"
+}
+
+sxc-help() {
+    msg yellow "Usage: sexy-copy (-r|-R|--recursive) (-ex [string]) (-exreg [regex]) [from_path] [to_path]\n"
+    
+    msg "$_LN"
+    sxc-copyright
+    msg "$_LN"
+
+    msg bold cyan  "About:\n"
+    msg green      "    sexy-copy is a small utility script written in Bash which wraps the native 'cp' command.\n"
+
+    msg green      "    sexy-copy is part of privex-utils, a repository of small executable utility scripts written in different "
+    msg green      "    programming languages (mostly bash, zsh and python), each of which would be too small to be maintained"
+    msg green      "    as an individual project\n"
+
+    msg green      "    As the name implies, it's purpose is to show file/folder copying progress in a more user friendly format,"
+    msg green      "    with use of terminal colours to emphasize different events occurring during the copying process.\n"
+
+    msg green      "    It allows copying individual files, all files within a folder, or recursively copying all "
+    msg green      "    files and subfolders within a given folder. \n"
+
+    msg green      "    Unlike traditional 'cp', sexy-copy supports excluding files/folders via both simple string searching, and"
+    msg green      "    as well as regex comparisons using 'grep -E', allowing for more control over which files/folders are copied,"
+    msg green      "    similar to Rsync.\n"
+
+    msg bold cyan  "Examples:\n"
+    msg green      "   sexy-copy /root/example /mnt/hello/world"
+    msg green      "   sexy-copy -r /root/nested /var/lib/output\n"
+    msg green      "   sexy-copy -r -exreg '/.cache$' -ex zsh_history -ex bash_history /root/ /mnt/newdisk/root/\n"
+    msg bold cyan  "IMPORTANT - Use of ending slashes:\n"
+
+    msg bold green "     When from_path is a FOLDER to be copied, the use of ending slashes doesn't matter.\n"
+
+    msg cyan  "     Example command:${RESET}   sexy-copy -r /some/folder /var/some/folder"
+    msg cyan  "     Example command:${RESET}   sexy-copy -r /some/folder/ /var/some/folder/\n"
+
+    msg green "     Both commands would copy the CONTENTS of /some/folder/ into the folder /var/some/folder/"
+    msg green "     e.g. the source folder's file /some/folder/example.csv would be copied to /var/some/folder/example.csv\n"
+
+    msg bold green "     When from_path is a FILE to be copied, the use of ending slashes IS VERY IMPORTANT.\n"
+    msg cyan  "     Example command (no ending slash):${RESET}   sexy-copy readme.txt /tmp/example\n"
+    msg green "     With the above example command, readme.txt will be copied in one of two ways:\n"
+    
+    msg green "         - If /tmp/example does not exist as a folder, readme.txt will be copied into the FILE /tmp/example"
+    msg green "         - If /tmp/example exists as a folder, readme.txt will be copied into the FOLDER /tmp/example as /tmp/example/readme.txt\n"
+    
+    msg cyan  "     Example command (with ending slash):${RESET}   sexy-copy readme.txt /tmp/example/\n"
+    msg green "     With the above command, there is less ambiguity. readme.txt will be copied INTO /tmp/example/ - and if /tmp/example/ does not exist,"
+    msg green "     then it will be automatically created with 'mkdir -p', and readme.txt will be copied to /tmp/example/readme.txt\n"
+    
+    msg bold cyan  "Options:\n"
+
+    msg bold green "    -r | -R | --recurse | --recursive   ${RESET}${GREEN}\n" \
+              "          If from_path is a directory, and contains subdirectories, then you must set\n" \
+              "          recursive mode if you want subdirectories to be copied, instead of just files.\n"
+    
+    msg bold green "    -ex | --ex | --excl | -excl | --exclude(s) [search_string]${RESET}${GREEN}\n" \
+              "          Do not copy files/folders which contain this string in their path.\n" \
+              "          For multiple excludes, specify '--exclude \"somestring\"' multiple times.\n" \
+              "          Internally, sexy-copy just grep's each file being copied for this string.\n"
+
+    msg bold green "    -exreg | --exreg | -excl-reg | --excl-reg | --exclude(s)-regex [regex_string]${RESET}${GREEN}\n" \
+              "          Do not copy files/folders if their path matches this regex string.\n" \
+              "          For multiple excludes, specify '--exclude-regex \"^somestr.*\$\"' multiple times.\n" \
+              "          Internally, sexy-copy just \"grep -E [regex_string]\"'s each file path being copied for this string.\n"
+    msg "$_LN"
+    sxc-copyright
+    msg "$_LN"
+}
+
+if (( $# > 0 )) && { [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]] || [[ "$1" == "-help" ]]; }; then
+    sxc-help
+    exit 0
+fi
+
+if (( $# < 2 )); then
+    msgerr red "Error: sexy-copy expects at least 2 arguments"
+    >&2 sxc-help
+    error_control 2
+    exit 1
+fi
+
+EXCLUDES=()
+EXCLUDE_REGEX=()
+
+is_excluded() {
+    local exf="$1"
+    for ex_simp in "${EXCLUDES[@]}"; do
+        if grep -q "$ex_simp" <<< "$exf"; then
+            return 0
+        fi
+    done
+    for ex_regex in "${EXCLUDE_REGEX[@]}"; do
+        if grep -Eq "$ex_regex" <<< "$exf"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+FROM_PATH="" TO_PATH="" RECURSIVE=0
+
+shopt -s extglob
+
+while (( $# > 0 )); do
+    case "$1" in
+        -r|-R|?(-)-recurse|?(-)-recursive)
+            msgerr yellow " --> Recursive mode enabled"
+            RECURSIVE=1
+            ;;
+        ?(-)-excl?(ude)?(s)|?(-)-ex)
+            shift
+            msgerr yellow " --> Adding normal exclude: $1"
+            EXCLUDES+=("$1")
+            ;;
+        ?(-)-ex?(-)reg|?(-)-excl?(udes)-reg?(ex))
+            shift; 
+            msgerr yellow " --> Adding regex exclude: $1"
+            EXCLUDE_REGEX+=("$1")
+            ;;
+        *)
+            if [[ -z "$FROM_PATH" ]]; then
+                FROM_PATH="$1"
+                msgerr yellow " +++ From path: $FROM_PATH"
+            elif [[ -z "$TO_PATH" ]]; then
+                TO_PATH="$1"
+                msgerr yellow " +++ To path: $TO_PATH"
+            fi
+            ;;
+    esac
+    shift
+done
+
+echo
+
+# backup $IFS into _IFS so we can restore it after any changes
+_IFS="$IFS"
+
+: "${COPY_FILE_ARGS=""}"
+
+IFS=" " read -r -a COPY_FILE_ARGS <<< "$COPY_FILE_ARGS"
+
+copy-file() {
+    local f="$1" bf to_dn outfile="$2"
+    bf=$(basename "$f")
+    to_dn=$(dirname $outfile)
+
+    if [ ! -d "$to_dn" ]; then
+        msg yellow "$idt    [!!!] Output folder $to_dn doesn't exist."
+        msg green  "$idt    [...] Creating output folder $to_dn ..."
+        mkdir -p "$to_dn"
+        msg bold green  "$idt    [+++] Successfully created output folder $to_dn ...\n"
+    fi
+    msg green "$idt    [+] Installing: $bf   -->   ${outfile}"
+    cp "${COPY_FILE_ARGS[@]}" "$f" "${outfile}"
+}
+
+sxc-copy() {
+    local from_dir="$1" to_dir="$2" f bf idt="" orig_indent
+    if [ ! -f "$from_dir" ] && [ ! -d "$from_dir" ]; then
+        raise_error "Source path '$from_dir' does not exist!" "${BASH_SOURCE[0]}" $LINENO
+    fi
+    if (( SXC_INDENT > 0 )); then
+        for _ in $(seq 1 $SXC_INDENT); do
+            idt="${idt}    "
+        done
+    fi
+
+    if [[ -f "$from_dir" ]]; then
+        local from_bn to_dn
+        from_bn=$(basename "$from_dir")
+        to_dn=$(dirname "$to_dir")
+
+        if [[ -d "$to_dir" ]] || [[ "${to_dir: -1}" == "/" ]]; then
+            copy-file "$from_dir" "${to_dir%/}/${from_bn}"
+        else
+            copy-file "$from_dir" "${to_dir%/}"
+        fi
+        return $?
+    fi
+
+    msg cyan "$idt >>> Copying files from $from_dir into $to_dir\n"
+    if [ ! -d "$to_dir" ]; then
+        msg yellow "$idt    [!!!] Output folder $to_dir doesn't exist."
+        msg green  "$idt    [...] Creating output folder $to_dir ..."
+        mkdir -p "$to_dir"
+        msg bold green  "$idt    [+++] Successfully created output folder $to_dir ...\n"
+    fi
+    for f in "${from_dir%/}"/* "${from_dir%/}"/.*; do
+        bf=$(basename "$f")
+        if [[ "$bf" == ".." ]] || [[ "$bf" == "." ]]; then
+            # msgerr yellow "$idt    [?] Ignoring file: '$bf'"
+            continue
+        fi
+        if is_excluded "$f" || is_excluded "$bf"; then
+            msg yellow "$idt    [!!!] Skipping file/folder $f as it matches an --exclude/--exclude-regex argument\n"
+            continue
+        fi
+        if [ -f "$f" ]; then
+            copy-file "$f" "${to_dir}/${bf}"
+        elif (( RECURSIVE )) && [ -d "$f" ]; then
+            orig_indent=$SXC_INDENT
+            SXC_INDENT=$(( SXC_INDENT + 1 ))
+            sxc-copy "$f" "${to_dir}/$bf"
+            SXC_INDENT=$orig_indent
+        else
+            msg yellow "$idt    [!!!] Skipping file $f (recurse: $RECURSIVE)\n"
+        fi
+    done
+    msg green "\n$idt [+++] Finished copying $from_dir into $to_dir\n"
+
+}
+
+sxc-copy "$FROM_PATH" "$TO_PATH"
+

@@ -64,6 +64,7 @@ INSTALL_BINS=(
     "${DIR}/bin/mk-user-chroot"
     "${DIR}/bin/mockscript"
     "${DIR}/bin/raid-part"
+    "${DIR}/bin/sexy-copy"
     "${DIR}/bin/strip-end-slash"
     "${DIR}/repos/slotmgr/slotmgr.sh"
 )
