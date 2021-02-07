@@ -1,0 +1,9 @@
+*.png
+*.ini
+
+__pycache__
+*.pyc
+*.swp*
+
+.idea
+.vscode

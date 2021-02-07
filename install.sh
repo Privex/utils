@@ -28,21 +28,21 @@
 #
 ############
 
-# Array of Privex ShellCore modules to be loaded during ShellCore initialisation.
-SG_LOAD_LIBS=(gnusafe helpers trap_helper traplib)
+# directory where the script is located, so we can source files regardless of where PWD is
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Error handling function for ShellCore
-_sc_fail() { >&2 echo "Failed to load or install Privex ShellCore..." && exit 1; }
+source "${DIR}/lib.sh"
 
-# If `load.sh` isn't found in the user install / global install, then download and run the auto-installer
-# from Privex's CDN.
-[[ -f "${HOME}/.pv-shcore/load.sh" ]] || [[ -f "/usr/local/share/pv-shcore/load.sh" ]] || \
-    { curl -fsS https://cdn.privex.io/github/shell-core/install.sh | bash >/dev/null; } || _sc_fail
+if ! install-pkg ${INST_PKGS[@]}; then
+    msgerr yellow "\n [!!!] Failed to detect a supported package manager (supported: apt(-get), yum/dnf, brew, apk)"
+    msgerr yellow " [!!!] Not installing libmemcached-dev, python3, python3-wheel, gcc, g++, or other important packages...\n"
+fi
 
-# Attempt to load the local install of ShellCore first, then fallback to global install if it's not found.
-[[ -d "${HOME}/.pv-shcore" ]] && source "${HOME}/.pv-shcore/load.sh" || \
-    source "/usr/local/share/pv-shcore/load.sh" || _sc_fail
-
+if (( EUID == 0 )); then
+    [[ -n "$INST_POST" ]] && bash -c "$INST_POST"
+else
+    [[ -n "$INST_POST" ]] && sudo -H bash -c "$INST_POST"
+fi
 error_control 0
 
 
@@ -64,6 +64,7 @@ INSTALL_BINS=(
     "${DIR}/bin/mk-user-chroot"
     "${DIR}/bin/mockscript"
     "${DIR}/bin/raid-part"
+    "${DIR}/bin/pycolumn"
     "${DIR}/bin/sexy-copy"
     "${DIR}/bin/strip-end-slash"
     "${DIR}/repos/slotmgr/slotmgr.sh"
@@ -100,10 +101,41 @@ strip_ext() {
 msg green " >>> Calling 'git submodule update --init --recursive' to ensure all external repos are downloaded..."
 git submodule update --init --recursive
 
+
+#if [[ -n "$INST_CMD" ]]; then
+#    msgerr yellow " [...] Installing all required packages using: $INST_CMD"
+#    if (( EUID == 0 )); then
+#        [[ -n "$INST_CMD_UPDATE" ]] && "$INST_CMD" "$INST_CMD_UPDATE"
+#        if (( INST_SEP )); then
+#            for p in "${INST_PKGS[@]}"; do
+#                [[ -n "$INST_CMD_INSTALL" ]] && "$INST_CMD" "$INST_CMD_INSTALL" "$p"
+#            done
+#        else
+#            [[ -n "$INST_CMD_INSTALL" ]] && "$INST_CMD" "$INST_CMD_INSTALL" "${INST_PKGS[@]}"
+#        fi
+#        [[ -n "$INST_POST" ]] && bash -c "$INST_POST"
+#    else
+#        [[ -n "$INST_CMD_UPDATE" ]] && sudo -H "$INST_CMD" "$INST_CMD_UPDATE"
+#        if (( INST_SEP )); then
+#            for p in "${INST_PKGS[@]}"; do
+#                [[ -n "$INST_CMD_INSTALL" ]] && sudo -H "$INST_CMD" "$INST_CMD_INSTALL" "$p"
+#            done
+#        else
+#            [[ -n "$INST_CMD_INSTALL" ]] && sudo -H "$INST_CMD" "$INST_CMD_INSTALL" "${INST_PKGS[@]}"
+#        fi
+#        [[ -n "$INST_POST" ]] && sudo -H bash -c "$INST_POST"
+#    fi
+#else
+#    msgerr yellow "\n [!!!] Failed to detect a supported package manager (supported: apt(-get), yum/dnf, brew, apk)"
+#    msgerr yellow " [!!!] Not installing libmemcached-dev, python3, python3-wheel, gcc, g++, or other important packages...\n"
+#fi
+
+
 if ! can_write "$UTIL_INSTALL_DIR"; then
     msgerr yellow " [!!!] Current user doesn't have write permission for $UTIL_INSTALL_DIR"
     msgerr yellow " [!!!] Will try sudo."
     install() { sudo "install" "$@"; }
+
 fi
 
 msg green "\n >>> Installing binaries into ${UTIL_INSTALL_DIR} ...\n"

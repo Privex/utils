@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+#################################################################
+#                                                               #
+#    +===================================================+      #
+#    |                 © 2021 Privex Inc.                |      #
+#    |               https://www.privex.io               |      #
+#    +===================================================+      #
+#    |                                                   |      #
+#    |        Privex Random Utilities                    |      #
+#    |                                                   |      #
+#    |        License: GNU GPL v3.0                      |      #
+#    |                                                   |      #
+#    |        Core Developer(s):                         |      #
+#    |                                                   |      #
+#    |          (+)  Chris (@someguy123) [Privex]        |      #
+#    |                                                   |      #
+#    +===================================================+      #
+#                                                               #
+#          Part of https://github.com/Privex/utils              #
+#                                                               #
+#    Copyright (C) 2021  Privex Inc. (https://www.privex.io)    #
+#                                                               #
+#################################################################
+#
+# Requirements:
+#
+#     pip3 install -U privex-helpers privex-loghelper colorama
+#
+#
+import sys
+import os
+import string
+import re
+import logging
+import textwrap
+import argparse
+from colorama import Fore, Style
+from privex.helpers import ErrHelpParser, empty, empty_if, env_int, AUTO, DictObject
+from privex.loghelper import LogHelper
+from os import getenv as env
+from typing import List, Tuple, Dict, Optional, Union
+
+LOG_LEVEL = logging.getLevelName(env('LOG_LEVEL', 'WARNING'))
+
+_lh = LogHelper("pycolumn", handler_level=LOG_LEVEL)
+_lh.add_console_handler(stream=sys.stderr)
+
+log = _lh.get_logger()
+
+
+RED, GREEN, BLUE, CYAN, YELLOW = Fore.RED, Fore.GREEN, Fore.BLUE, Fore.CYAN, Fore.YELLOW
+BOLD, RESETCL, RESETST, RESET = Style.BRIGHT, Fore.RESET, Style.NORMAL, f"{Fore.RESET}{Style.NORMAL}"
+
+parser = ErrHelpParser(
+    description="PyColumn - a table/column generator tool, similar to the UNIX 'column' tool",
+    epilog=textwrap.dedent(f"""
+    {BOLD}{CYAN}Python-based Table Generator / Column Splitter{RESET}{YELLOW}
+        A tool similar to the UNIX/Linux 'column' program.
+        Part of Privex's Random Utils https://github.com/Privex/utils
+        (C) 2021 Privex Inc. - https://www.privex.io{RESETCL}
+
+    {RED}Examples:{RESET}
+       
+        {BLUE}By default, PyColumn will split using Python's standard .split(), which will cleanly split
+        each line into columns based on any whitespace between words, meaning you can mix and match
+        any number of spaces, along with tabs, and PyColumn will still split it as if there were only
+        one space between them.{RESET}
+
+        $ {CYAN}echo -e "hello world   test\\n lorem \\t ipsum dolor\\nyet another test" | {sys.argv[0]}{RESET}
+        
+        hello   world     test
+        lorem   ipsum     dolor
+        yet     another   test
+
+        {BLUE}If the columns are too cramped, you can add padding using the '-p' argument{RESET}
+
+        $ {CYAN}echo -e "hello world   test\\n lorem \\t ipsum dolor\\nyet another test" | {sys.argv[0]} -p 10{RESET}
+        hello          world            test
+        lorem          ipsum            dolor
+        yet            another          test
+
+        {BLUE}You can also split by any character you desire, PLUS if you have uneven columns, e.g. first row has
+        3 columns, second row has only 2 columns, PyColumn will handle it painlessly:{RESET}
+
+        $ {CYAN} echo -e "This is,just,an example\\nto show,custom\\nsplitting,and handling\\nof,missing,columns" \\
+                | ./pycolumn -p 5 ','{RESET}
+
+        This is       just              an example 
+        to show       custom 
+        splitting     and handling 
+        of            missing           columns 
+
+
+"""),
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+parser.add_argument('-w', '--min-col-width', type=int, default=5, dest='min_width', 
+help="Columns smaller than this, will be assumed to be min_width, when determining the largest column. This can be used to compensate for 'small' columns, to avoid them appearing squished together.")
+
+parser.add_argument('-m', '--max-col-width', type=int, default=50, dest='max_width', 
+help="Columns larger than this, will not be used in the determination for widest column. This is to avoid large end columns such as 'notes' from breaking the entire table. This defaults to 50 chars. Set to 0 to disable.")
+parser.add_argument('-p', '--pad', type=int, default=3, dest='padding', 
+    help="Number of extra space characters to pad columns with")
+parser.add_argument('-nc', '--no-colour', '--no-color', action='store_false', dest='comp_colour', default=True, 
+    help="Disable padding compensation which is added to columns containing terminal colour codes")
+
+parser.add_argument('-x', '--no-trim', action='store_false', dest='trim_lines', default=True, 
+    help="Do not trim whitespace from the end of lines (but trimming newlines is okay. use -xn to disable newline trimming too)")
+parser.add_argument('-xn', '--no-trim-nl', action='store_false', dest='trim_lines_nl', default=True, 
+    help="Do not trim newlines from the end of lines. (use -x in conjunction to disable whitespace trimming too)")
+
+parser.add_argument('-nb', '--no-buffer', action='store_false', dest='buffer', default=True)
+parser.add_argument('-s', default=None, dest='alt_split_char',
+    help="Alternative split character argument, for compatibility with unix 'column'")
+parser.add_argument('split_char', nargs='?', default=None)
+
+
+_re_find_colours = r'\x1b((\[m)|(\[[0-9;]+?m)|(\(B))'
+re_find_colours = re.compile(_re_find_colours, flags=re.MULTILINE | re.IGNORECASE | re.UNICODE)
+_re_wrapped_colours = f"({_re_find_colours})"
+re_wrapped_colours = re.compile(_re_wrapped_colours, flags=re.MULTILINE | re.IGNORECASE | re.UNICODE)
+
+def err(*args, file=sys.stderr, **kwargs):
+    print(*args, file=file, **kwargs)
+
+
+def replace_colours(data: str, flags=None) -> str:
+    #safek = re.escape(strings.punctuation.replace('\\', '').replace('-', '')) + '-'
+
+    #re.findall(r'\x1b\[[0-9;]+m')
+    # Match colour codes - starting with \x1b and are followed by
+    # either: \[m   OR   \[[0-9;]+?m    OR    (B
+    # Examples:   \x1b[1m   \x1b[33m   \x1b(B     \x1b[m
+    if not empty(flags):
+        return re.sub(_re_find_colours, '', data, flags=flags)
+    return re_find_colours.sub('', data)
+
+def find_colours(data: str, flags=None) -> Optional[List[tuple]]:
+    if not empty(flags):
+        return re.findall(_re_wrapped_colours, data, flags=flags)
+    return re_wrapped_colours.findall(data)
+
+def len_colours(data: str, flags=None) -> int:
+    colre = find_colours(data, flags)
+    ct = 0
+    if not empty(colre, itr=True):
+        for c in colre:
+            if len(colre) < 1: continue
+            ct += len(c[0])
+    return ct
+
+def min_colours(data: str, flags=None) -> int:
+    return len(replace_colours(data, flags))
+
+class Columner:
+    def __init__(self, data=None, splitchar=None, padding=3, **kwargs):
+        self.data = data
+        self.lines = empty_if(kwargs.get('lines'), [], itr=True)
+        self.padding = int(padding)
+        self.min_width = int(kwargs.get('min_width', 5))
+        self.max_width = int(kwargs.get('max_width', 50))
+        self.comp_colour = kwargs.get('comp_colour', True)
+        self.trim_lines = kwargs.get('trim_lines', True)
+        self.trim_lines_nl = kwargs.get('trim_lines_nl', True)
+        self._split_lines = []
+        self.splitchar = splitchar
+        self.stats = DictObject()
+
+    def from_handle_gen(self, handle=None, reset=True, flags='r'):
+        if empty(handle): handle = self.data
+        if reset:
+            self.lines = []
+        #with open(handle, flags) as fh:
+        for l in handle.readlines():
+            self.lines.append(l)
+            yield l
+
+    def from_handle(self, handle=None, reset=True, flags='r'):
+        return list(self.from_handle_get(handle, reset, flags))
+    
+    @property
+    def split_lines(self):
+        if not empty(self._split_lines, itr=True):
+            log.debug("Returning _split_lines")
+            return self._split_lines
+        splitchar = self.splitchar
+        self._split_lines = []
+        itx = self.lines if not empty(self.lines, itr=True) else self.from_handle_gen()
+        for l in itx:
+            log.debug(f"Adding line to self._split_lines: {l}")
+            stripchr = ''
+            if self.trim_lines: stripchr += " \t"
+            if self.trim_lines_nl: stripchr += "\r\n"
+            if len(stripchr) > 0:
+                log.debug(f"Stripping characters {stripchr!r} from line {l!r}")
+                l = l.strip(stripchr)
+            self._split_lines.append(l.split(self.splitchar))
+        return self._split_lines
+
+    @property
+    def col_count(self) -> int:
+        if 'col_count' not in self.stats:
+            self.gen_stats()
+        return self.stats.col_count
+
+    @property
+    def col_maxlen(self) -> list:
+        if 'col_maxlen' not in self.stats:
+            self.gen_stats()
+        return self.stats.col_maxlen
+
+    def gen_stats(self):
+        st = self.stats
+        st.col_count = 1
+        st.col_maxlen = []
+        for l in self.split_lines:
+            if len(l) > st.col_count: st.col_count = len(l)
+            for i, c in enumerate(l):
+                #col_len = min_colours(c) if self.comp_colour else len(c)
+                col_len = len(c)
+                log.debug(f"Orig col length: {col_len}")
+                col_len = self.min_width if self.min_width > 0 and col_len < self.min_width else col_len
+                log.debug(f"After min width: {col_len}")
+                col_len = self.max_width if self.max_width > 0 and col_len > self.max_width else col_len
+                log.debug(f"After max width: {col_len}")
+                if i >= (len(st.col_maxlen) - 1):
+                    st.col_maxlen.append(col_len)
+                    continue
+                if st.col_maxlen[i] < col_len:
+                    st.col_maxlen[i] = col_len
+   
+    def pad_columns(self):
+        mw, xpad = self.min_width, self.padding
+        colmaxlen = self.col_maxlen
+        for row in self.split_lines:
+            cpadrow = ""
+            for i, col in enumerate(row):
+                padct = mw + xpad if colmaxlen[i] < mw else colmaxlen[i] + xpad
+                if self.comp_colour:
+                    lc = len_colours(col)
+                    log.debug(f"Adding {lc} chars from padding (currently {padct} padding) for colour comp")
+                    padct += lc
+                cpadrow += "{:<" + str(padct) + "}"
+            log.debug(f"Formatting row: {cpadrow!r} with values: {row}")
+            frow = cpadrow.format(*row)
+            yield frow
+
+    def main(self, do_print=True, buff=False):
+        padlist = self.stats.padlist = []
+        for frow in self.pad_columns():
+            if do_print and not buff: print(frow)
+            padlist.append(frow)
+        
+        if do_print and buff: print("\n".join(padlist))
+        return padlist
+
+if __name__ == '__main__':
+    log.debug("Parsing args")
+    zargs = parser.parse_args()
+
+
+    #mw = zargs.min_width
+    #schar = zargs.split_char
+    #buff = zargs.buffer
+    #xpad = zargs.padding
+    log.debug("Init columner")
+    colx = Columner(
+        sys.stdin, empty_if(zargs.alt_split_char, zargs.split_char), 
+        min_width=zargs.min_width, padding=zargs.padding,
+        max_width=zargs.max_width, comp_colour=zargs.comp_colour,
+        trim_lines=zargs.trim_lines,
+        trim_lines_nl=zargs.trim_lines_nl
+    )
+    log.debug("Calling main")
+    colx.main(buff=zargs.buffer)
+    log.debug("Done.")
+
+
+
+
+
+
+
